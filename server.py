@@ -13,8 +13,31 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}})
+CORS(
 
+    app,
+
+    resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}},
+
+    supports_credentials=True
+
+)
+
+@app.before_request
+
+def handle_options():
+
+    if request.method == "OPTIONS":
+
+        response = jsonify({'status': 'ok'})
+
+        response.headers.add("Access-Control-Allow-Origin", request.headers.get("Origin", "*"))
+
+        response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+        response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+        return response, 200
 # Initialize predictor
 predictor = AdvancedNBAPlayerPredictor()
 
@@ -63,7 +86,7 @@ def get_teams():
         logger.error(f"Error fetching teams: {str(e)}")
         return jsonify({"error": f"Service unavailable: {str(e)}"}), 503
 
-@app.route('/api/player-details/<player_name>', methods=['GET'])
+@app.route('/api/player-details/<player_name>', methods=['GET', 'OPTIONS'])
 def get_player_details(player_name):
     """API endpoint to get detailed player information."""
     try:
