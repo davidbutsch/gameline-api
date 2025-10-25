@@ -3,6 +3,7 @@ from nba_api.stats.endpoints import playergamelog, leaguedashplayerstats, league
 from nba_api.stats.static import teams, players
 from joblib import Memory
 import logging
+import requests
 import os
 from retrying import retry
 
@@ -581,3 +582,36 @@ def get_league_average_minutes(season, season_type='Regular Season'):
             'avg_mpg': 24.0,
             'std_mpg': 8.0
         }
+
+@cache.cache
+def get_injured_players_list():
+    """
+    Fetch the NBA injury report and return a list of injured players
+    in the format "Player TEAM" where TEAM is the 3-letter abbreviation.
+    """
+    try:
+        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            logger.error(f"Failed to fetch injuries, status code: {resp.status_code}")
+            return []
+
+        data = resp.json()
+        injured_players = []
+
+        for team in data.get("injuries", []):
+            team_abbr = team.get("team", {}).get("abbreviation")
+            if not team_abbr:
+                continue
+            for injury in team.get("injuries", []):
+                athlete = injury.get("athlete", {})
+                player_name = athlete.get("displayName")
+                if player_name:
+                    injured_players.append(f"{player_name} {team_abbr}")
+
+        logger.info(f"Retrieved {len(injured_players)} injured players")
+        return injured_players
+
+    except Exception as e:
+        logger.error(f"Error fetching injured players: {e}")
+        return []
