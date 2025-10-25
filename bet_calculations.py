@@ -155,36 +155,70 @@ def get_player_season_recent_averages(player_id, season, season_type, recent_n=1
     """Get season, recent game, and season-long averages for a player across all stats."""
     logger.info(f"Fetching averages for player_id: {player_id}, season: {season}, season_type: {season_type}")
     try:
-        seasons_to_try = ['2025-26', '2024-25', '2023-24', '2022-23', '2021-22']
-        gamelog = None
+        # Prioritize 2025-26, then 2024-25 for current season data
+        seasons_to_try = ['2025-26', '2024-25']
+        all_games = []
+        season_gamelog = None
+        
+        # Get games from both seasons for recent averages
         for s in seasons_to_try:
             try:
                 gamelog = fetch_game_log(player_id, s, season_type)
                 if not gamelog.empty:
-                    break
+                    gamelog['SEASON'] = s
+                    all_games.append(gamelog)
+                    if s == season:  # Store the requested season's data
+                        season_gamelog = gamelog
+                    logger.info(f"Found {len(gamelog)} games for player {player_id} in season {s}")
             except Exception as e:
                 logger.warning(f"Error fetching game log for player {player_id}, season {s}: {e}")
-        if gamelog is None or gamelog.empty:
-            logger.error(f"No valid game log data for player {player_id} across seasons {seasons_to_try}")
+        
+        # If no games found in requested seasons, try older seasons
+        if not all_games:
+            older_seasons = ['2023-24', '2022-23', '2021-22']
+            for s in older_seasons:
+                try:
+                    gamelog = fetch_game_log(player_id, s, season_type)
+                    if not gamelog.empty:
+                        gamelog['SEASON'] = s
+                        all_games.append(gamelog)
+                        if season_gamelog is None:
+                            season_gamelog = gamelog
+                        logger.info(f"Found {len(gamelog)} games for player {player_id} in season {s}")
+                        break
+                except Exception as e:
+                    logger.warning(f"Error fetching game log for player {player_id}, season {s}: {e}")
+        
+        if not all_games:
+            logger.error(f"No valid game log data for player {player_id}")
             return {
                 'season_averages': {'PTS': 0.0, 'REB': 0.0, 'AST': 0.0, 'BLK': 0.0, 'STL': 0.0, 'DEF_RATING': 110.0},
                 'recent_averages': {'PTS': 0.0, 'REB': 0.0, 'AST': 0.0, 'BLK': 0.0, 'STL': 0.0, 'DEF_RATING': 110.0},
                 'season_long_averages': {'PTS': 0.0, 'REB': 0.0, 'AST': 0.0, 'BLK': 0.0, 'STL': 0.0, 'DEF_RATING': 110.0}
             }
 
-        # Calculate season-long averages
-        season_long_avgs = gamelog[['PTS', 'REB', 'AST', 'BLK', 'STL']].mean().to_dict()
-
-        # Calculate recent averages (last 10 games)
-        recent_games = gamelog.sort_values('GAME_DATE', ascending=False).head(recent_n)
+        # Combine all games and sort by date
+        combined_games = pd.concat(all_games).reset_index(drop=True)
+        combined_games['GAME_DATE'] = pd.to_datetime(combined_games['GAME_DATE'], format='mixed', errors='coerce')
+        combined_games = combined_games.sort_values('GAME_DATE', ascending=False)
+        
+        # Calculate recent averages (last 10 games across seasons)
+        recent_games = combined_games.head(recent_n)
         recent_avgs = recent_games[['PTS', 'REB', 'AST', 'BLK', 'STL']].mean().to_dict()
+        
+        # Calculate season-long averages (use the requested season or most recent available)
+        if season_gamelog is not None:
+            season_long_avgs = season_gamelog[['PTS', 'REB', 'AST', 'BLK', 'STL']].mean().to_dict()
+        else:
+            # Fallback to recent games if no season data
+            season_long_avgs = recent_avgs.copy()
 
         # Add combined stats for both season and recent
         for cat in ['POINTS+REBOUNDS+ASSISTS', 'REBOUNDS+ASSISTS', 'POINTS+REBOUNDS', 'POINTS+ASSISTS', 'BLOCKS+STEALS']:
             season_long_avgs[cat] = get_combined_stat_value(season_long_avgs, cat)
             recent_avgs[cat] = get_combined_stat_value(recent_avgs, cat)
 
-        # Fetch defensive rating
+        # Fetch defensive rating from current season
         advanced_stats = get_player_advanced_stats(player_id, season, season_type)
         def_rating = advanced_stats.get('DEF_RATING', 110.0)
 
@@ -192,10 +226,12 @@ def get_player_season_recent_averages(player_id, season, season_type, recent_n=1
         season_long_avgs['DEF_RATING'] = float(def_rating)
         recent_avgs['DEF_RATING'] = float(def_rating)
 
+        logger.info(f"Recent averages calculated from {len(recent_games)} games, season averages from {len(season_gamelog) if season_gamelog is not None else 0} games")
+
         return {
-            'season_averages': {k: float(v) for k, v in season_long_avgs.items() if not pd.isna(v)},  # Renamed for clarity with predictive_model.py
+            'season_averages': {k: float(v) for k, v in season_long_avgs.items() if not pd.isna(v)},
             'recent_averages': {k: float(v) for k, v in recent_avgs.items() if not pd.isna(v)},
-            'season_long_averages': {k: float(v) for k, v in season_long_avgs.items() if not pd.isna(v)}  # Explicit season-long key
+            'season_long_averages': {k: float(v) for k, v in season_long_avgs.items() if not pd.isna(v)}
         }
     except Exception as e:
         logger.error(f"Unexpected error fetching averages for player {player_id}, season {season}: {e}")
@@ -206,41 +242,68 @@ def get_player_season_recent_averages(player_id, season, season_type, recent_n=1
         }
 
 @cache.cache
-def get_head_to_head_stats(player_id, opponent_abbr, seasons=('2024-25', '2025-26')):
-    """Get head-to-head stats vs. an opponent."""
+def get_head_to_head_stats(player_id, opponent_abbr, seasons=('2025-26', '2024-25')):
+    """Get head-to-head stats vs. an opponent (last 10 games, prioritizing current season)."""
     opponent_id = get_team_id(opponent_abbr)
     if not opponent_id:
         logger.warning(f"No opponent ID for {opponent_abbr}")
         return pd.DataFrame(), []
-    game_logs = []
+    
+    h2h_games = []
+    seasons_tried = []
+    
+    # Try seasons in order: 2025-26 first, then 2024-25
     for season in seasons:
         try:
+            seasons_tried.append(season)
             gl = fetch_game_log(player_id, season, 'Regular Season')
+            if gl.empty:
+                logger.warning(f"No games found for player {player_id} in season {season}")
+                continue
+                
             gl['OPPONENT'] = gl['MATCHUP'].apply(
                 lambda x: x.split(' vs. ')[1] if ' vs. ' in x else x.split(' @ ')[1]
             )
-            game_logs.append(gl)
+            
+            # Filter for head-to-head games against the opponent
+            season_h2h = gl[gl['OPPONENT'] == opponent_abbr]
+            if not season_h2h.empty:
+                h2h_games.extend(season_h2h.to_dict('records'))
+                logger.info(f"Found {len(season_h2h)} H2H games vs {opponent_abbr} in {season}")
+                
+                # If we have 10+ games, stop here
+                if len(h2h_games) >= 10:
+                    break
+                    
         except Exception as e:
             logger.warning(f"Error fetching H2H for player {player_id}, season {season}: {e}")
-    if not game_logs:
+            continue
+    
+    # Sort by date (most recent first) and take last 10
+    if h2h_games:
+        h2h_df = pd.DataFrame(h2h_games)
+        h2h_df['GAME_DATE'] = pd.to_datetime(h2h_df['GAME_DATE'], format='mixed', errors='coerce')
+        h2h_df = h2h_df.sort_values('GAME_DATE', ascending=False)
+        h2h_df = h2h_df.head(10)  # Take last 10 games
+        
+        h2h_stats = h2h_df[['PTS', 'REB', 'AST', 'BLK', 'STL']]
+        h2h_list = [
+            {
+                'Game_Date': row['GAME_DATE'].strftime('%Y-%m-%d'),
+                'Matchup': row['MATCHUP'],
+                'PTS': float(row['PTS']),
+                'REB': float(row['REB']),
+                'AST': float(row['AST']),
+                'BLK': float(row['BLK']),
+                'STL': float(row['STL'])
+            }
+            for _, row in h2h_df.iterrows()
+        ]
+        logger.info(f"Total H2H games for {player_id} vs {opponent_abbr}: {len(h2h_list)} (from seasons: {seasons_tried})")
+        return h2h_stats, h2h_list
+    else:
+        logger.warning(f"No H2H games found for {player_id} vs {opponent_abbr} in seasons {seasons_tried}")
         return pd.DataFrame(), []
-    all_games = pd.concat(game_logs).reset_index(drop=True)
-    h2h_games = all_games[all_games['OPPONENT'] == opponent_abbr]
-    h2h_stats = h2h_games[['PTS', 'REB', 'AST', 'BLK', 'STL']]
-    h2h_list = [
-        {
-            'Game_Date': row['GAME_DATE'],
-            'Matchup': row['MATCHUP'],
-            'PTS': float(row['PTS']),
-            'REB': float(row['REB']),
-            'AST': float(row['AST']),
-            'BLK': float(row['BLK']),
-            'STL': float(row['STL'])
-        }
-        for _, row in h2h_games.iterrows()
-    ]
-    logger.debug(f"H2H games for {player_id} vs {opponent_abbr}: {len(h2h_list)}")
-    return h2h_stats, h2h_list
 
 @cache.cache
 def get_league_defensive_averages(season, season_type):
@@ -326,19 +389,33 @@ def get_team_recent_stats(team_id, season, season_type, measure_type, num_games=
 
 @cache.cache
 def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
-    """Get opponent team averages for the current season."""
+    """Get opponent team averages for the current season (prioritizing 2025-26)."""
     try:
         team_id = get_team_id(team_abbr)
         if not team_id:
             logger.error(f"Team {team_abbr} not found")
             return None
-            
-        # Get team stats from league dashboard
-        team_stats = leaguedashteamstats.LeagueDashTeamStats(
-            season=season,
-            season_type_all_star=season_type,
-            timeout=120
-        ).get_data_frames()[0]
+        
+        # Try seasons in order: 2025-26 first, then 2024-25
+        seasons_to_try = ['2025-26', '2024-25']
+        team_stats = None
+        
+        for s in seasons_to_try:
+            try:
+                team_stats = leaguedashteamstats.LeagueDashTeamStats(
+                    season=s,
+                    season_type_all_star=season_type,
+                    timeout=120
+                ).get_data_frames()[0]
+                logger.info(f"Successfully fetched team stats for {team_abbr} from season {s}")
+                break
+            except Exception as e:
+                logger.warning(f"Error fetching team stats for {team_abbr} from season {s}: {e}")
+                continue
+        
+        if team_stats is None:
+            logger.error(f"Could not fetch team stats for {team_abbr} from any season")
+            return None
         
         # Find the specific team
         team_data = team_stats[team_stats['TEAM_ID'] == team_id]
