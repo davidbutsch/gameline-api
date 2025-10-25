@@ -385,6 +385,73 @@ class AdvancedNBAPlayerPredictor:
         except Exception as e:
             logger.error("Error in parallel training: %s", e)
 
+    def calculate_opponent_impact(self, category, opp_avgs):
+        """Calculate opponent impact based on category type and opponent stats."""
+        # Define offensive and defensive categories
+        offensive_categories = ['Points', 'Rebounds', 'Assists', 'Points+Rebounds+Assists', 
+                               'Rebounds+Assists', 'Points+Rebounds', 'Points+Assists']
+        defensive_categories = ['Blocks', 'Steals', 'Blocks+Steals']
+        
+        # Determine if this is an offensive or defensive category
+        is_offensive = category in offensive_categories
+        
+        # Get league averages for comparison (using typical NBA averages)
+        league_avg_pts = 110.0
+        league_avg_reb = 43.0
+        league_avg_ast = 25.0
+        league_avg_blk = 5.0
+        league_avg_stl = 7.0
+        
+        impact = 0.0
+        
+        if is_offensive:
+            # For offensive categories, analyze opponent's defensive capabilities
+            # Higher opponent points = faster pace = more offensive opportunities (positive)
+            pts_ratio = opp_avgs.get('PTS', league_avg_pts) / league_avg_pts
+            impact += (pts_ratio - 1.0) * 0.1  # 10% impact per 10% above/below average
+            
+            # Higher opponent assists = faster pace = more offensive opportunities (positive)
+            ast_ratio = opp_avgs.get('AST', league_avg_ast) / league_avg_ast
+            impact += (ast_ratio - 1.0) * 0.1
+            
+            # Higher opponent rebounds = more possession retention = fewer offensive opportunities (negative)
+            reb_ratio = opp_avgs.get('REB', league_avg_reb) / league_avg_reb
+            impact -= (reb_ratio - 1.0) * 0.15  # 15% impact per 10% above/below average
+            
+            # Higher opponent blocks = better defense = fewer offensive opportunities (negative)
+            blk_ratio = opp_avgs.get('BLK', league_avg_blk) / league_avg_blk
+            impact -= (blk_ratio - 1.0) * 0.2  # 20% impact per 10% above/below average
+            
+            # Higher opponent steals = better defense = fewer offensive opportunities (negative)
+            stl_ratio = opp_avgs.get('STL', league_avg_stl) / league_avg_stl
+            impact -= (stl_ratio - 1.0) * 0.2
+            
+        else:
+            # For defensive categories, analyze opponent's offensive capabilities
+            # Higher opponent points = more offensive activity = more defensive opportunities (positive)
+            pts_ratio = opp_avgs.get('PTS', league_avg_pts) / league_avg_pts
+            impact += (pts_ratio - 1.0) * 0.15
+            
+            # Higher opponent assists = more ball movement = more defensive opportunities (positive)
+            ast_ratio = opp_avgs.get('AST', league_avg_ast) / league_avg_ast
+            impact += (ast_ratio - 1.0) * 0.1
+            
+            # Higher opponent rebounds = more possession = more defensive opportunities (positive)
+            reb_ratio = opp_avgs.get('REB', league_avg_reb) / league_avg_reb
+            impact += (reb_ratio - 1.0) * 0.1
+            
+            # For defensive stats, we want more opportunities, so we reverse the logic
+            # Higher opponent offensive activity = more defensive opportunities
+        
+        # Cap the impact between -0.3 and +0.3 (30% max adjustment)
+        impact = max(-0.3, min(0.3, impact))
+        
+        logger.info(f"Opponent impact calculation for {category}: {impact:.3f}")
+        logger.info(f"Opponent stats: PTS={opp_avgs.get('PTS', 0):.1f}, REB={opp_avgs.get('REB', 0):.1f}, "
+                   f"AST={opp_avgs.get('AST', 0):.1f}, BLK={opp_avgs.get('BLK', 0):.1f}, STL={opp_avgs.get('STL', 0):.1f}")
+        
+        return impact
+
     def predict_performance(self, features, category, season_type, season_avgs, recent_avgs, h2h_avgs, opp_avgs, usg_pct, avg_rest_days):
         """Predict player performance."""
         features_scaled = self.scaler.transform(features.toarray())
@@ -449,15 +516,23 @@ class AdvancedNBAPlayerPredictor:
         h2h_avg = sum(h2h_avgs.get(stat, 0.0) for stat in stats_needed)
         opp_stats = ['PTS', 'REB', 'AST', 'BLK', 'STL']
         opp_avg = np.mean([opp_avgs.get(stat, 0.0) for stat in opp_stats]) if opp_avgs else 0.0
+        # Calculate opponent impact based on category type
+        opponent_impact = self.calculate_opponent_impact(category, opp_avgs)
+        
         # New weights: recent_avg=0.3, season_avg=0.3, season_long_avg=0.2, h2h_avg=0.1, opp_avg=0.1
         weighted_avg = 0.3 * recent_avg + 0.3 * season_avg + 0.2 * season_long_avg + 0.1 * h2h_avg + 0.1 * opp_avg
+        
+        # Apply opponent impact to weighted average
+        weighted_avg_with_impact = weighted_avg * (1 + opponent_impact)
+        
         # Blend weighted average with model output
-        final_pred = 0.5 * weighted_avg + 0.5 * model_pred
+        final_pred = 0.5 * weighted_avg_with_impact + 0.5 * model_pred
         # Diagnostics
         logger.info(f"Prediction diagnostics for {category}:\n"
                     f"  season_avg={season_avg}, recent_avg={recent_avg}, season_long_avg={season_long_avg}, h2h_avg={h2h_avg}, opp_avg={opp_avg}\n"
+                    f"  opponent_impact={opponent_impact:.3f}, weighted_avg={weighted_avg:.2f}, weighted_avg_with_impact={weighted_avg_with_impact:.2f}\n"
                     f"  base_model_outputs={base_model_outputs}\n"
-                    f"  weighted_avg={weighted_avg}, model_pred={model_pred}, final_pred={final_pred}")
+                    f"  model_pred={model_pred:.2f}, final_pred={final_pred:.2f}")
 
         residuals = []
         if hasattr(self.x_train, 'toarray'):
@@ -549,18 +624,21 @@ class AdvancedNBAPlayerPredictor:
         else:
             h2h_avgs = pd.Series({stat: 0.0 for stat in self.stat_categories})
 
-        opp_team_id = bc.get_team_id(opponent_abbr)
-        measure_type = 'Defense' if category_type == 'offensive' else 'Base'
-        opp_recent_stats = bc.get_team_recent_stats(opp_team_id, '2025-26', season_type, measure_type, num_games=10)
-        opp_avgs = {
-            'PTS': opp_recent_stats.get('PTS', 110.0),
-            'REB': opp_recent_stats.get('REB', 43.0),
-            'AST': opp_recent_stats.get('AST', 25.0),
-            'BLK': opp_recent_stats.get('BLK', 5.0),
-            'STL': opp_recent_stats.get('STL', 7.0),
-            'DEF_RATING': opp_recent_stats.get('DEF_RATING', 110.0),
-            'OFF_RATING': opp_recent_stats.get('OFF_RATING', 110.0),
-        }
+        # Get opponent team averages for current season
+        opp_avgs = bc.get_opponent_team_averages(opponent_abbr, '2025-26', season_type)
+        if opp_avgs is None:
+            logger.warning(f"Could not fetch opponent averages for {opponent_abbr}, using defaults")
+            opp_avgs = {
+                'PTS': 110.0,
+                'REB': 43.0,
+                'AST': 25.0,
+                'BLK': 5.0,
+                'STL': 7.0,
+                'PACE': 100.0,
+                'OFF_RATING': 110.0,
+                'DEF_RATING': 110.0,
+                'GP': 82
+            }
 
         recent_means = {f'recent_form_{stat}': y[:, self.stat_categories.index(stat)].ravel()[-5:].mean() for stat in self.stat_categories}
         ema_trends = {}
@@ -651,17 +729,23 @@ class AdvancedNBAPlayerPredictor:
         season_avg = sum(safe_float(season_avgs.get(stat, 0.0)) for stat in stats_needed)
         recent_avg = sum(safe_float(recent_avgs.get(stat, 0.0)) for stat in stats_needed)
         h2h_avg = sum(safe_float(h2h_avgs.get(stat, 0.0)) for stat in stats_needed)
+        # Calculate opponent impact for display
+        opponent_impact = self.calculate_opponent_impact(category, opp_avgs)
+        
         message += (f"\nPlayer Averages for {category}:\n"
                    f"  Season: {season_avg:.1f}\n"
                    f"  Last 10 Games: {recent_avg:.1f}\n"
                    f"  vs. {opponent_abbr}: {h2h_avg:.1f}\n"
-                   f"\nOpponent {stat_type} Averages (Last 10 Games):\n"
+                   f"\nOpponent Team Averages (Current Season):\n"
                    f"  Points: {opp_avgs['PTS']:.1f}\n"
                    f"  Rebounds: {opp_avgs['REB']:.1f}\n"
                    f"  Assists: {opp_avgs['AST']:.1f}\n"
                    f"  Blocks: {opp_avgs['BLK']:.1f}\n"
                    f"  Steals: {opp_avgs['STL']:.1f}\n"
-                   f"  {stat_type} Rating: {opp_avgs['RATING']:.1f}\n"
+                   f"  Pace: {opp_avgs.get('PACE', 100.0):.1f}\n"
+                   f"\nOpponent Impact Analysis:\n"
+                   f"  Impact Factor: {opponent_impact:+.1%}\n"
+                   f"  Analysis: {'Favorable matchup' if opponent_impact > 0.05 else 'Unfavorable matchup' if opponent_impact < -0.05 else 'Neutral matchup'}\n"
                    f"\nPredicted {category}: {pred_rounded} (95% CI: {ci_lower_rounded}-{ci_upper_rounded})\n"
                    f"P(Over {betting_line}): {p_over*100:.1f}%\n"
                    f"{confidence_pct:.1f}% confident bet on {bet_on.upper()}")

@@ -325,6 +325,50 @@ def get_team_recent_stats(team_id, season, season_type, measure_type, num_games=
         }
 
 @cache.cache
+def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
+    """Get opponent team averages for the current season."""
+    try:
+        team_id = get_team_id(team_abbr)
+        if not team_id:
+            logger.error(f"Team {team_abbr} not found")
+            return None
+            
+        # Get team stats from league dashboard
+        team_stats = leaguedashteamstats.LeagueDashTeamStats(
+            season=season,
+            season_type_all_star=season_type,
+            timeout=120
+        ).get_data_frames()[0]
+        
+        # Find the specific team
+        team_data = team_stats[team_stats['TEAM_ID'] == team_id]
+        if team_data.empty:
+            logger.warning(f"No team data found for {team_abbr} in {season}")
+            return None
+            
+        team_row = team_data.iloc[0]
+        
+        # Extract relevant stats
+        opponent_averages = {
+            'PTS': float(team_row.get('PTS', 110.0)),
+            'REB': float(team_row.get('REB', 43.0)),
+            'AST': float(team_row.get('AST', 25.0)),
+            'BLK': float(team_row.get('BLK', 5.0)),
+            'STL': float(team_row.get('STL', 7.0)),
+            'PACE': float(team_row.get('PACE', 100.0)),
+            'OFF_RATING': float(team_row.get('OFF_RATING', 110.0)),
+            'DEF_RATING': float(team_row.get('DEF_RATING', 110.0)),
+            'GP': int(team_row.get('GP', 82))  # Games played
+        }
+        
+        logger.info(f"Fetched opponent averages for {team_abbr}: {opponent_averages}")
+        return opponent_averages
+        
+    except Exception as e:
+        logger.error(f"Error fetching opponent averages for {team_abbr}: {e}")
+        return None
+
+@cache.cache
 def get_player_advanced_stats(player_id, season, season_type):
     """Get advanced player stats."""
     try:
