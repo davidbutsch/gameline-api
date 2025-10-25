@@ -495,3 +495,89 @@ def get_all_active_players():
     except Exception as e:
         logger.error(f"Error fetching active players: {str(e)}")
         return []
+
+@cache.cache
+def get_league_team_averages(season, season_type='Regular Season'):
+    """Get league-wide team averages for normalization purposes."""
+    try:
+        team_stats = leaguedashteamstats.LeagueDashTeamStats(
+            season=season,
+            season_type_all_star=season_type,
+            timeout=120
+        ).get_data_frames()[0]
+        
+        if team_stats.empty:
+            logger.warning(f"No team stats data for {season}")
+            return {
+                'PTS': 115.0, 'REB': 43.0, 'AST': 25.0, 'BLK': 5.0, 'STL': 7.0,
+                'PTS_std': 4.0, 'REB_std': 2.5, 'AST_std': 2.0, 'BLK_std': 0.8, 'STL_std': 0.9
+            }
+        
+        # Calculate league averages and standard deviations
+        league_avgs = {
+            'PTS': team_stats['PTS'].mean() / team_stats['GP'].mean(),
+            'REB': team_stats['REB'].mean() / team_stats['GP'].mean(), 
+            'AST': team_stats['AST'].mean() / team_stats['GP'].mean(),
+            'BLK': team_stats['BLK'].mean() / team_stats['GP'].mean(),
+            'STL': team_stats['STL'].mean() / team_stats['GP'].mean()
+        }
+        
+        # Calculate standard deviations for normalization
+        team_stats_per_game = team_stats.copy()
+        for stat in ['PTS', 'REB', 'AST', 'BLK', 'STL']:
+            team_stats_per_game[f'{stat}_PG'] = team_stats[stat] / team_stats['GP']
+            league_avgs[f'{stat}_std'] = team_stats_per_game[f'{stat}_PG'].std()
+        
+        logger.info(f"League averages for {season}: {league_avgs}")
+        return league_avgs
+        
+    except Exception as e:
+        logger.error(f"Error fetching league team averages for {season}: {e}")
+        # Return default values based on typical NBA averages
+        return {
+            'PTS': 115.0, 'REB': 43.0, 'AST': 25.0, 'BLK': 5.0, 'STL': 7.0,
+            'PTS_std': 4.0, 'REB_std': 2.5, 'AST_std': 2.0, 'BLK_std': 0.8, 'STL_std': 0.9
+        }
+
+@cache.cache
+def get_league_average_minutes(season, season_type='Regular Season'):
+    """Get league-wide average minutes per game for players."""
+    try:
+        player_stats = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=season,
+            season_type_all_star=season_type,
+            timeout=120
+        ).get_data_frames()[0]
+        
+        if player_stats.empty:
+            logger.warning(f"No player stats data for {season}")
+            return {'avg_mpg': 24.0, 'std_mpg': 8.0}  # Default NBA average
+        
+        # Filter for players with meaningful minutes (>= 5 games, >= 5 MPG)
+        active_players = player_stats[
+            (player_stats['GP'] >= 5) & 
+            ((player_stats['MIN'] / player_stats['GP']) >= 5.0)
+        ]
+        
+        if active_players.empty:
+            return {'avg_mpg': 24.0, 'std_mpg': 8.0}
+            
+        # Calculate minutes per game for each player
+        active_players = active_players.copy()
+        active_players['MPG'] = active_players['MIN'] / active_players['GP']
+        
+        league_avg_mpg = active_players['MPG'].mean()
+        league_std_mpg = active_players['MPG'].std()
+        
+        logger.info(f"League average minutes per game for {season}: {league_avg_mpg:.1f} ± {league_std_mpg:.1f}")
+        return {
+            'avg_mpg': float(league_avg_mpg),
+            'std_mpg': float(league_std_mpg)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching league average minutes for {season}: {e}")
+        return {
+            'avg_mpg': 24.0,
+            'std_mpg': 8.0
+        }

@@ -102,6 +102,19 @@ class AdvancedNBAPlayerPredictor:
         all_games = all_games[(all_games['PTS'] <= 50.0) & (all_games['MIN'] >= 10.0)]
         for stat in self.stat_categories + ['MIN']:
             all_games[stat] = all_games.get(stat, 0.0)
+            
+        # Calculate minutes-related features
+        if 'MIN' in all_games.columns and len(all_games) > 0:
+            # Per-minute efficiency stats
+            for stat in self.stat_categories:
+                all_games[f'{stat}_per_min'] = all_games[stat] / (all_games['MIN'] + 1e-6)  # Avoid division by zero
+            
+            # Minutes trend (recent vs historical)
+            all_games['min_trend'] = all_games['MIN'].rolling(window=5, min_periods=1).mean() - all_games['MIN'].expanding().mean()
+            
+            # Minutes consistency (lower std = more consistent playing time)
+            all_games['min_consistency'] = 1.0 / (all_games['MIN'].rolling(window=10, min_periods=3).std() + 1.0)
+            
         return all_games
 
     def fetch_all_team_stats(self, seasons, season_type):
@@ -200,8 +213,19 @@ class AdvancedNBAPlayerPredictor:
         all_games = all_games.join(opp_data.drop(columns=['OPPONENT', 'SEASON']))
         logger.debug("all_games columns after join: %s", all_games.columns)
 
+        # Get league averages for normalization using the new function
+        league_team_stats = bc.get_league_team_averages('2025-26', 'Regular Season')
+        
+        # Create normalized opponent strength features
         for stat in self.stat_categories:
-            all_games[f'opp_strength_{stat}'] = all_games[f'opp_{stat}'] / league_avgs['2025-26'][f'opp_{stat}']
+            # Normalize to league average (ratio-based)
+            league_avg = league_team_stats[stat]
+            all_games[f'opp_strength_{stat}'] = all_games[f'opp_{stat}'] / league_avg
+            
+            # Create standardized features (standard deviations from mean)
+            league_std = league_team_stats[f'{stat}_std']
+            all_games[f'opp_normalized_{stat}'] = (all_games[f'opp_{stat}'] - league_avg) / league_std
+        
         all_games['opp_pace'] = all_games.get('PACE', 100.0)
         all_games['opp_rating'] = all_games.get('DEF_RATING', 110.0)
 
@@ -228,6 +252,36 @@ class AdvancedNBAPlayerPredictor:
         avg_min = fatigue_metrics.get('AVG_MIN', 30.0)
         avg_rest_days = fatigue_metrics.get('AVG_REST_DAYS', 2.0)
         injury_risk = 1 if avg_min > 38.0 or avg_rest_days < 1.0 else 0
+        
+        # Get league average minutes for normalization
+        league_min_stats = bc.get_league_average_minutes('2025-26', season_type)
+        if isinstance(league_min_stats, dict):
+            league_avg_mpg = league_min_stats.get('avg_mpg', 24.0)
+            league_std_mpg = league_min_stats.get('std_mpg', 8.0)
+        else:
+            # Handle case where function returns just a float (backward compatibility)
+            league_avg_mpg = float(league_min_stats) if league_min_stats else 24.0
+            league_std_mpg = 8.0
+        
+        # Calculate minutes-related features
+        min_vs_league = (avg_min - league_avg_mpg) / league_std_mpg  # Standard deviations from league average
+        
+        # Recent minutes trend and efficiency
+        if len(all_games) >= 5:
+            recent_min_avg = all_games['MIN'].head(5).mean()
+            season_min_avg = all_games['MIN'].mean()
+            min_recent_trend = (recent_min_avg - season_min_avg) / (season_min_avg + 1e-6)
+            
+            # Calculate efficiency metrics (stats per 36 minutes)
+            min_efficiency = {}
+            for stat in self.stat_categories:
+                if f'{stat}_per_min' in all_games.columns:
+                    min_efficiency[f'{stat}_per_36'] = all_games[f'{stat}_per_min'].mean() * 36
+                else:
+                    min_efficiency[f'{stat}_per_36'] = 0.0
+        else:
+            min_recent_trend = 0.0
+            min_efficiency = {f'{stat}_per_36': 0.0 for stat in self.stat_categories}
 
         recent_games = all_games.tail(10)
         ema_trends = {}
@@ -242,26 +296,51 @@ class AdvancedNBAPlayerPredictor:
         all_games['is_playoff'] = (all_games['SEASON_TYPE'] == 'Playoffs').astype(int)
         for stat in self.stat_categories:
             all_games[f'weighted_{stat}'] = all_games['recency_weight'] * all_games[stat]
-            all_games[f'opp_interaction_{stat}'] = all_games['same_opponent'] * all_games[f'opp_strength_{stat}']
+            all_games[f'opp_interaction_{stat}'] = all_games['same_opponent'] * all_games[f'opp_normalized_{stat}']
             all_games[f'recent_form_{stat}'] = all_games[stat].rolling(window=5, min_periods=1).mean().fillna(0)
-            all_games[f'opp_recent_{stat}'] = all_games[f'opp_strength_{stat}'] * 110.0
+            all_games[f'opp_recent_{stat}'] = all_games[f'opp_strength_{stat}'] * league_team_stats[stat]
             all_games[f'ema_trend_{stat}'] = ema_trends[stat]
+        
+        # Add minutes-related features
         all_games['usg_pct'] = usg_pct
         all_games['ts_pct'] = ts_pct
         all_games['avg_min'] = avg_min
         all_games['avg_rest_days'] = avg_rest_days
         all_games['injury_risk'] = injury_risk
+        all_games['min_vs_league'] = min_vs_league
+        all_games['min_recent_trend'] = min_recent_trend
+        
+        # Add per-36 minute efficiency features
+        for stat in self.stat_categories:
+            all_games[f'{stat}_per_36'] = min_efficiency[f'{stat}_per_36']
+        
+        # Add minutes interaction with usage rate (higher usage + more minutes = more opportunities)
+        all_games['min_usage_interaction'] = all_games['MIN'] * usg_pct
+        
+        # Add minutes-based fatigue indicator (games with high minutes followed by low performance)
+        if len(all_games) > 1:
+            all_games['high_min_fatigue'] = (
+                (all_games['MIN'].shift(1) > all_games['MIN'].quantile(0.8)) & 
+                (all_games['PTS'] < all_games['PTS'].quantile(0.4))
+            ).astype(int)
+        else:
+            all_games['high_min_fatigue'] = 0
 
         self.feature_cols = [
             'recency_weight', 'same_opponent', 'is_playoff', 'opp_pace', 'opp_rating', 'usg_pct', 'ts_pct',
-            'avg_min', 'avg_rest_days', 'injury_risk', 'HOME_AWAY', 'has_h2h'
+            'avg_min', 'avg_rest_days', 'injury_risk', 'HOME_AWAY', 'has_h2h',
+            'MIN', 'min_vs_league', 'min_recent_trend', 'min_usage_interaction', 'high_min_fatigue'
         ] + [f'weighted_{stat}' for stat in self.stat_categories] + \
           [f'opp_strength_{stat}' for stat in self.stat_categories] + \
+          [f'opp_normalized_{stat}' for stat in self.stat_categories] + \
           [f'opp_interaction_{stat}' for stat in self.stat_categories] + \
           [f'recent_form_{stat}' for stat in self.stat_categories] + \
           [f'h2h_avg_{stat}' for stat in self.stat_categories] + \
           [f'opp_recent_{stat}' for stat in self.stat_categories] + \
-          [f'ema_trend_{stat}' for stat in self.stat_categories]
+          [f'ema_trend_{stat}' for stat in self.stat_categories] + \
+          [f'{stat}_per_min' for stat in self.stat_categories] + \
+          [f'{stat}_per_36' for stat in self.stat_categories] + \
+          ['min_trend', 'min_consistency']
 
         X = all_games[self.feature_cols].fillna(0)
         variances = X.var()
@@ -276,7 +355,10 @@ class AdvancedNBAPlayerPredictor:
             'usg_pct': usg_pct,
             'avg_rest_days': avg_rest_days,
             'avg_min': avg_min,
-            'ts_pct': ts_pct
+            'ts_pct': ts_pct,
+            'min_vs_league': min_vs_league,
+            'min_recent_trend': min_recent_trend,
+            'min_efficiency': min_efficiency
         }
 
     def train_stat_model(self, stat_idx, stat, x_scaled, x_pca, y, data_hash):
@@ -386,71 +468,100 @@ class AdvancedNBAPlayerPredictor:
             logger.error("Error in parallel training: %s", e)
 
     def calculate_opponent_impact(self, category, opp_avgs):
-        """Calculate opponent impact based on category type and opponent stats."""
-        # Define offensive and defensive categories
-        offensive_categories = ['Points', 'Rebounds', 'Assists', 'Points+Rebounds+Assists', 
-                               'Rebounds+Assists', 'Points+Rebounds', 'Points+Assists']
-        defensive_categories = ['Blocks', 'Steals', 'Blocks+Steals']
+        """
+        Calculate weighted opponent impact based on normalized team stats.
         
-        # Determine if this is an offensive or defensive category
-        is_offensive = category in offensive_categories
+        Uses the weighted adjustment system based on opponent team averages
+        relative to league means and standard deviations.
+        """
+        # Get league averages and standard deviations for normalization
+        league_stats = bc.get_league_team_averages('2025-26', 'Regular Season')
         
-        # Get league averages for comparison (using typical NBA averages)
-        league_avg_pts = 110.0
-        league_avg_reb = 43.0
-        league_avg_ast = 25.0
-        league_avg_blk = 5.0
-        league_avg_stl = 7.0
+        # Extract league averages and standard deviations
+        league_means = {
+            'PTS': league_stats['PTS'],
+            'REB': league_stats['REB'],
+            'AST': league_stats['AST'],
+            'BLK': league_stats['BLK'],
+            'STL': league_stats['STL']
+        }
         
-        impact = 0.0
+        league_stds = {
+            'PTS': league_stats['PTS_std'],
+            'REB': league_stats['REB_std'],
+            'AST': league_stats['AST_std'],
+            'BLK': league_stats['BLK_std'],
+            'STL': league_stats['STL_std']
+        }
         
-        if is_offensive:
-            # For offensive categories, analyze opponent's defensive capabilities
-            # Higher opponent points = faster pace = more offensive opportunities (positive)
-            pts_ratio = opp_avgs.get('PTS', league_avg_pts) / league_avg_pts
-            impact += (pts_ratio - 1.0) * 0.1  # 10% impact per 10% above/below average
+        # Normalize opponent stats to standard deviations from league mean
+        normalized_opp_stats = {}
+        for stat in ['PTS', 'REB', 'AST', 'BLK', 'STL']:
+            opp_value = opp_avgs.get(stat, league_means[stat])
+            std_devs_from_mean = (opp_value - league_means[stat]) / league_stds[stat]
+            normalized_opp_stats[stat] = std_devs_from_mean
             
-            # Higher opponent assists = faster pace = more offensive opportunities (positive)
-            ast_ratio = opp_avgs.get('AST', league_avg_ast) / league_avg_ast
-            impact += (ast_ratio - 1.0) * 0.1
-            
-            # Higher opponent rebounds = more possession retention = fewer offensive opportunities (negative)
-            reb_ratio = opp_avgs.get('REB', league_avg_reb) / league_avg_reb
-            impact -= (reb_ratio - 1.0) * 0.15  # 15% impact per 10% above/below average
-            
-            # Higher opponent blocks = better defense = fewer offensive opportunities (negative)
-            blk_ratio = opp_avgs.get('BLK', league_avg_blk) / league_avg_blk
-            impact -= (blk_ratio - 1.0) * 0.2  # 20% impact per 10% above/below average
-            
-            # Higher opponent steals = better defense = fewer offensive opportunities (negative)
-            stl_ratio = opp_avgs.get('STL', league_avg_stl) / league_avg_stl
-            impact -= (stl_ratio - 1.0) * 0.2
-            
-        else:
-            # For defensive categories, analyze opponent's offensive capabilities
-            # Higher opponent points = more offensive activity = more defensive opportunities (positive)
-            pts_ratio = opp_avgs.get('PTS', league_avg_pts) / league_avg_pts
-            impact += (pts_ratio - 1.0) * 0.15
-            
-            # Higher opponent assists = more ball movement = more defensive opportunities (positive)
-            ast_ratio = opp_avgs.get('AST', league_avg_ast) / league_avg_ast
-            impact += (ast_ratio - 1.0) * 0.1
-            
-            # Higher opponent rebounds = more possession = more defensive opportunities (positive)
-            reb_ratio = opp_avgs.get('REB', league_avg_reb) / league_avg_reb
-            impact += (reb_ratio - 1.0) * 0.1
-            
-            # For defensive stats, we want more opportunities, so we reverse the logic
-            # Higher opponent offensive activity = more defensive opportunities
+        # Define weighted impact matrix based on specifications
+        # Rows: Player stats, Columns: Opponent stats (PPG, RPG, APG, SPG, BPG)
+        impact_weights = {
+            'Points': {'PTS': +0.40, 'REB': -0.25, 'AST': +0.08, 'STL': -0.12, 'BLK': -0.15},
+            'Rebounds': {'PTS': +0.20, 'REB': -0.60, 'AST': +0.00, 'STL': -0.10, 'BLK': -0.05},
+            'Assists': {'PTS': +0.25, 'REB': -0.10, 'AST': +0.35, 'STL': -0.10, 'BLK': -0.05},
+            'Steals': {'PTS': +0.15, 'REB': -0.05, 'AST': +0.05, 'STL': +0.30, 'BLK': -0.05},
+            'Blocks': {'PTS': +0.10, 'REB': -0.05, 'AST': +0.00, 'STL': -0.05, 'BLK': +0.35}
+        }
         
-        # Cap the impact between -0.3 and +0.3 (30% max adjustment)
-        impact = max(-0.3, min(0.3, impact))
+        # Map category to player stat(s)
+        category_mapping = {
+            'POINTS': ['Points'],
+            'REBOUNDS': ['Rebounds'], 
+            'ASSISTS': ['Assists'],
+            'BLOCKS': ['Blocks'],
+            'STEALS': ['Steals'],
+            'POINTS+REBOUNDS+ASSISTS': ['Points', 'Rebounds', 'Assists'],
+            'REBOUNDS+ASSISTS': ['Rebounds', 'Assists'],
+            'POINTS+REBOUNDS': ['Points', 'Rebounds'],
+            'POINTS+ASSISTS': ['Points', 'Assists'],
+            'BLOCKS+STEALS': ['Blocks', 'Steals']
+        }
         
-        logger.info(f"Opponent impact calculation for {category}: {impact:.3f}")
-        logger.info(f"Opponent stats: PTS={opp_avgs.get('PTS', 0):.1f}, REB={opp_avgs.get('REB', 0):.1f}, "
-                   f"AST={opp_avgs.get('AST', 0):.1f}, BLK={opp_avgs.get('BLK', 0):.1f}, STL={opp_avgs.get('STL', 0):.1f}")
+        # Get the relevant player stats for this category
+        player_stats = category_mapping.get(category.upper(), ['Points'])
         
-        return impact
+        # Calculate weighted impact for each player stat in the category
+        total_impact = 0.0
+        num_stats = len(player_stats)
+        
+        for player_stat in player_stats:
+            stat_impact = 0.0
+            
+            # Apply weights for each opponent stat
+            for opp_stat, weight in impact_weights[player_stat].items():
+                std_devs = normalized_opp_stats[opp_stat]
+                weighted_impact = weight * std_devs
+                stat_impact += weighted_impact
+                
+                logger.debug(f"{player_stat} vs Opp {opp_stat}: "
+                           f"normalized={std_devs:.3f}, weight={weight:+.2f}, "
+                           f"impact={weighted_impact:+.4f}")
+            
+            total_impact += stat_impact
+            logger.debug(f"{player_stat} total impact: {stat_impact:+.4f}")
+        
+        # Average the impact across multiple stats in combined categories
+        if num_stats > 1:
+            total_impact = total_impact / num_stats
+        
+        # Cap the impact between -0.5 and +0.5 (50% max adjustment)
+        total_impact = max(-0.5, min(0.5, total_impact))
+        
+        logger.info(f"Opponent impact calculation for {category}:")
+        logger.info(f"  Normalized opponent stats (std devs from league mean):")
+        for stat, norm_val in normalized_opp_stats.items():
+            logger.info(f"    {stat}: {norm_val:+.3f} ({opp_avgs.get(stat, 0):.1f} vs {league_means[stat]:.1f})")
+        logger.info(f"  Final weighted impact: {total_impact:+.4f}")
+        
+        return total_impact
 
     def predict_performance(self, features, category, season_type, season_avgs, recent_avgs, h2h_avgs, opp_avgs, usg_pct, avg_rest_days):
         """Predict player performance."""
@@ -603,9 +714,10 @@ class AdvancedNBAPlayerPredictor:
         data_hash = self.compute_data_hash(all_games)
 
         features = self.create_features(all_games, opponent_abbr, season_type, category_type)
-        x, y, opponent_strengths, usg_pct, avg_rest_days, avg_min, ts_pct = (
+        x, y, opponent_strengths, usg_pct, avg_rest_days, avg_min, ts_pct, min_vs_league, min_recent_trend, min_efficiency = (
             features['X_sparse'], features['y'], features['opponent_stats'], features['usg_pct'],
-            features['avg_rest_days'], features['avg_min'], features['ts_pct']
+            features['avg_rest_days'], features['avg_min'], features['ts_pct'],
+            features['min_vs_league'], features['min_recent_trend'], features['min_efficiency']
         )
         self.x_train, _, self.y_train, _ = train_test_split(x, y, test_size=0.2, random_state=42)
         self.train_model(self.x_train, self.y_train, data_hash)
@@ -641,6 +753,20 @@ class AdvancedNBAPlayerPredictor:
             }
 
         recent_means = {f'recent_form_{stat}': y[:, self.stat_categories.index(stat)].ravel()[-5:].mean() for stat in self.stat_categories}
+        
+        # Calculate recent means for minutes-related features from game data
+        recent_games_data = all_games.tail(5)
+        if not recent_games_data.empty:
+            recent_means['MIN'] = recent_games_data['MIN'].mean()
+            for stat in self.stat_categories:
+                if f'{stat}_per_min' in recent_games_data.columns:
+                    recent_means[f'{stat}_per_min'] = recent_games_data[f'{stat}_per_min'].mean()
+                else:
+                    recent_means[f'{stat}_per_min'] = 0.0
+        else:
+            recent_means['MIN'] = avg_min
+            for stat in self.stat_categories:
+                recent_means[f'{stat}_per_min'] = 0.0
         ema_trends = {}
         recent_games = all_games.tail(10)
         for stat in self.stat_categories:
@@ -664,6 +790,19 @@ class AdvancedNBAPlayerPredictor:
         else:
             opp_avgs['RATING'] = opp_avgs['OFF_RATING']
             
+        # Get league stats for normalization in upcoming features
+        league_team_stats = bc.get_league_team_averages('2025-26', season_type)
+        
+        # Calculate normalized opponent features for upcoming game
+        opp_normalized_features = {}
+        for stat in self.stat_categories:
+            league_avg = league_team_stats[stat]
+            league_std = league_team_stats[f'{stat}_std']
+            opp_normalized_features[f'opp_normalized_{stat}'] = [(opp_avgs.get(stat, league_avg) - league_avg) / league_std]
+        
+        # Calculate predicted minutes for upcoming game (use recent average)
+        predicted_min = recent_means.get('MIN', avg_min) if 'MIN' in recent_means else avg_min
+        
         upcoming_features = pd.DataFrame({
             'recency_weight': [1.0],
             'same_opponent': [1],
@@ -677,13 +816,23 @@ class AdvancedNBAPlayerPredictor:
             'injury_risk': [1 if avg_min > 38.0 or avg_rest_days < 1.0 else 0],
             'HOME_AWAY': [1],
             'has_h2h': [1 if len(h2h_stats) > 0 else 0],
+            'MIN': [predicted_min],
+            'min_vs_league': [(avg_min - league_team_stats.get('avg_mpg', 24.0)) / league_team_stats.get('std_mpg', 8.0)],
+            'min_recent_trend': [0.0],  # Will be calculated from recent games trend
+            'min_usage_interaction': [predicted_min * usg_pct],
+            'high_min_fatigue': [0],  # Assume no fatigue for upcoming game
             **{f'weighted_{stat}': [y[:, self.stat_categories.index(stat)].mean()] for stat in self.stat_categories},
-            **{f'opp_strength_{stat}': [opponent_strengths.get(f'opp_{stat}', 1.0)] for stat in self.stat_categories},
-            **{f'opp_interaction_{stat}': [1 * opponent_strengths.get(f'opp_{stat}', 1.0)] for stat in self.stat_categories},
+            **{f'opp_strength_{stat}': [opp_avgs.get(stat, league_team_stats[stat]) / league_team_stats[stat]] for stat in self.stat_categories},
+            **opp_normalized_features,
+            **{f'opp_interaction_{stat}': [1 * (opp_avgs.get(stat, league_team_stats[stat]) / league_team_stats[stat])] for stat in self.stat_categories},
             **{f'recent_form_{stat}': [recent_means[f'recent_form_{stat}']] for stat in self.stat_categories},
             **{f'h2h_avg_{stat}': [h2h_avgs[stat]] for stat in self.stat_categories},
             **{f'opp_recent_{stat}': [opp_avgs[stat]] for stat in self.stat_categories},
-            **{f'ema_trend_{stat}': [ema_trends[stat]] for stat in self.stat_categories}
+            **{f'ema_trend_{stat}': [ema_trends[stat]] for stat in self.stat_categories},
+            **{f'{stat}_per_min': [recent_means.get(f'{stat}_per_min', 0.0)] for stat in self.stat_categories},
+            **{f'{stat}_per_36': [recent_means.get(f'{stat}_per_min', 0.0) * 36] for stat in self.stat_categories},
+            'min_trend': [0.0],  # Calculated from rolling averages
+            'min_consistency': [1.0]  # Default consistency value
         }, index=pd.Index([0]))[self.feature_cols].fillna(0)
 
         upcoming_features_sparse = csr_matrix(upcoming_features.values)
