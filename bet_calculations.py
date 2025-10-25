@@ -390,16 +390,21 @@ def get_team_recent_stats(team_id, season, season_type, measure_type, num_games=
 
 @cache.cache
 def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
-    """Get opponent team averages for the current season (prioritizing 2025-26)."""
+    """Get opponent team averages for the specified season."""
     try:
         team_id = get_team_id(team_abbr)
         if not team_id:
             logger.error(f"Team {team_abbr} not found")
             return None
         
-        # Try seasons in order: 2025-26 first, then 2024-25
-        seasons_to_try = ['2025-26', '2024-25']
+        # If a specific season is provided, use it; otherwise try current seasons
+        if season and season != 'current':
+            seasons_to_try = [season]
+        else:
+            seasons_to_try = ['2025-26', '2024-25']
+        
         team_stats = None
+        selected_season = None
         
         for s in seasons_to_try:
             try:
@@ -408,8 +413,25 @@ def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
                     season_type_all_star=season_type,
                     timeout=120
                 ).get_data_frames()[0]
-                logger.info(f"Successfully fetched team stats for {team_abbr} from season {s}")
-                break
+                
+                # Find the specific team to check if it has enough games
+                temp_team_data = team_stats[team_stats['TEAM_ID'] == team_id]
+                if not temp_team_data.empty:
+                    games_played = int(temp_team_data.iloc[0].get('GP', 0))
+                    # Prefer seasons with more games (at least 10 games for meaningful averages)
+                    if games_played >= 10:
+                        logger.info(f"Successfully fetched team stats for {team_abbr} from season {s} ({games_played} games)")
+                        selected_season = s
+                        break
+                    elif len(seasons_to_try) == 1:
+                        # If only one season specified, use it even with few games
+                        logger.info(f"Using season {s} for {team_abbr} with {games_played} games (only option)")
+                        selected_season = s
+                        break
+                    else:
+                        logger.warning(f"Season {s} for {team_abbr} only has {games_played} games, trying next season")
+                        continue
+                        
             except Exception as e:
                 logger.warning(f"Error fetching team stats for {team_abbr} from season {s}: {e}")
                 continue
@@ -431,12 +453,14 @@ def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
         if games_played == 0:
             games_played = 82  # Prevent division by zero
             
+        # NBA API returns season totals, so we divide by games played to get per-game averages
+        # Only divide by games_played if the stat exists, otherwise use reasonable per-game defaults
         opponent_averages = {
-            'PTS': float(team_row.get('PTS', 110.0 * games_played)) / games_played,
-            'REB': float(team_row.get('REB', 43.0 * games_played)) / games_played,
-            'AST': float(team_row.get('AST', 25.0 * games_played)) / games_played,
-            'BLK': float(team_row.get('BLK', 5.0 * games_played)) / games_played,
-            'STL': float(team_row.get('STL', 7.0 * games_played)) / games_played,
+            'PTS': float(team_row['PTS']) / games_played if 'PTS' in team_row and pd.notna(team_row['PTS']) else 110.0,
+            'REB': float(team_row['REB']) / games_played if 'REB' in team_row and pd.notna(team_row['REB']) else 43.0,
+            'AST': float(team_row['AST']) / games_played if 'AST' in team_row and pd.notna(team_row['AST']) else 25.0,
+            'BLK': float(team_row['BLK']) / games_played if 'BLK' in team_row and pd.notna(team_row['BLK']) else 5.0,
+            'STL': float(team_row['STL']) / games_played if 'STL' in team_row and pd.notna(team_row['STL']) else 7.0,
             'PACE': float(team_row.get('PACE', 100.0)),
             'OFF_RATING': float(team_row.get('OFF_RATING', 110.0)),
             'DEF_RATING': float(team_row.get('DEF_RATING', 110.0)),
