@@ -6,13 +6,14 @@ import logging
 import requests
 import os
 from retrying import retry
+from dynamic_config import dynamic_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Cache for API calls
 cache = Memory(location='./bet_cache', verbose=0)
-cache.clear()  # Clear cache on startup to ensure fresh data
+# cache.clear()  # Commented out to avoid serialization issues
 
 # NBA Team Primary Colors (official team colors)
 TEAM_COLORS = {
@@ -116,6 +117,25 @@ def get_player_id(player_name):
         return None
 
 @cache.cache
+def get_player_info(player_id):
+    """Get player information from ID."""
+    try:
+        player = players.find_player_by_id(player_id)
+        if not player or player == 0:
+            logger.error(f"Player with ID {player_id} not found")
+            return None
+        player_info = player
+        logger.debug(f"Player info for ID {player_id}: {player_info}")
+        return {
+            'player_id': player_id,
+            'player_name': player_info.get('full_name', ''),
+            'team_abbreviation': player_info.get('team_abbreviation', None)
+        }
+    except Exception as e:
+        logger.error(f"Error getting player info for ID {player_id}: {e}")
+        return None
+
+@cache.cache
 def get_team_id(team_abbr):
     """Get team ID from abbreviation."""
     try:
@@ -156,8 +176,9 @@ def get_player_season_recent_averages(player_id, season, season_type, recent_n=1
     """Get season, recent game, and season-long averages for a player across all stats."""
     logger.info(f"Fetching averages for player_id: {player_id}, season: {season}, season_type: {season_type}")
     try:
-        # Prioritize 2025-26, then 2024-25 for current season data
-        seasons_to_try = ['2025-26', '2024-25']
+        # Use dynamic available seasons
+        from dynamic_config import dynamic_config
+        seasons_to_try = dynamic_config.get_available_seasons()
         all_games = []
         season_gamelog = None
         
@@ -243,7 +264,7 @@ def get_player_season_recent_averages(player_id, season, season_type, recent_n=1
         }
 
 @cache.cache
-def get_head_to_head_stats(player_id, opponent_abbr, seasons=('2025-26', '2024-25')):
+def get_head_to_head_stats(player_id, opponent_abbr, seasons=None):
     """Get head-to-head stats vs. an opponent (last 10 games, prioritizing current season)."""
     opponent_id = get_team_id(opponent_abbr)
     if not opponent_id:
@@ -251,9 +272,13 @@ def get_head_to_head_stats(player_id, opponent_abbr, seasons=('2025-26', '2024-2
         return pd.DataFrame(), []
     
     h2h_games = []
+    if seasons is None:
+        from dynamic_config import dynamic_config
+        seasons = dynamic_config.get_available_seasons()
+    
     seasons_tried = []
     
-    # Try seasons in order: 2025-26 first, then 2024-25
+    # Try seasons in order
     for season in seasons:
         try:
             seasons_tried.append(season)
@@ -308,44 +333,34 @@ def get_head_to_head_stats(player_id, opponent_abbr, seasons=('2025-26', '2024-2
 
 @cache.cache
 def get_league_defensive_averages(season, season_type):
-    """Get league-wide defensive averages."""
+    """Get league-wide defensive averages using dynamic configuration."""
     try:
-        stats = leaguedashteamstats.LeagueDashTeamStats(
-            season=season,
-            season_type_all_star=season_type,
-            measure_type_detailed_defense='Defense',
-            timeout=120
-        ).get_data_frames()[0]
-        logger.info(f"Available columns in team stats for {season}: {stats.columns.tolist()}")
+        # Use dynamic configuration to get league averages
+        league_averages = dynamic_config.get_league_averages_from_api(season, season_type)
         
-        column_mapping = {
-            'PTS': ['OPP_PTS', 'OPP_PTS_PG', 'OPP_POINTS', 'OPP_PTS_PER_GAME'],
-            'REB': ['DREB', 'OPP_REB', 'OPP_REB_PG', 'OPP_REB_PER_GAME'],
-            'AST': ['OPP_AST', 'OPP_AST_PG', 'OPP_ASSISTS', 'OPP_AST_PER_GAME'],
-            'BLK': ['BLK', 'BLK_PG', 'BLOCKS', 'BLK_PER_GAME'],
-            'STL': ['STL', 'STL_PG', 'STEALS', 'STL_PER_GAME']
+        # Extract defensive stats from the dynamic data
+        defensive_averages = {
+            'PTS': league_averages.get('PTS', 110.0),
+            'REB': league_averages.get('REB', 43.0),
+            'AST': league_averages.get('AST', 25.0),
+            'BLK': league_averages.get('BLK', 5.0),
+            'STL': league_averages.get('STL', 7.0)
         }
         
-        avgs = {}
-        for stat, possible_cols in column_mapping.items():
-            found_col = None
-            for col in possible_cols:
-                if col in stats.columns:
-                    found_col = col
-                    break
-            
-            if found_col:
-                avgs[stat] = stats[found_col].mean()
-                logger.debug(f"Using column '{found_col}' for {stat}")
-            else:
-                logger.warning(f"No column found for {stat} in {season}, using default. Available columns: {[col for col in stats.columns if stat.lower() in col.lower() or 'opp' in col.lower()]}")
-                avgs[stat] = {'PTS': 110.0, 'REB': 43.0, 'AST': 25.0, 'BLK': 5.0, 'STL': 7.0}.get(stat)
+        logger.info(f"Dynamic league defensive averages for {season}: {defensive_averages}")
+        return defensive_averages
         
-        logger.debug(f"League averages for {season}: {avgs}")
-        return avgs
     except Exception as e:
-        logger.error(f"Error fetching league averages for {season}: {e}")
-        return {'PTS': 110.0, 'REB': 43.0, 'AST': 25.0, 'BLK': 5.0, 'STL': 7.0}
+        logger.error(f"Error fetching dynamic league averages for {season}: {e}")
+        # Fallback to dynamic configuration's fallback method
+        fallback_averages = dynamic_config._get_fallback_league_averages()
+        return {
+            'PTS': fallback_averages.get('PTS', 110.0),
+            'REB': fallback_averages.get('REB', 43.0),
+            'AST': fallback_averages.get('AST', 25.0),
+            'BLK': fallback_averages.get('BLK', 5.0),
+            'STL': fallback_averages.get('STL', 7.0)
+        }
 
 @cache.cache
 def get_team_recent_stats(team_id, season, season_type, measure_type, num_games=10):
@@ -436,7 +451,8 @@ def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
         if season and season != 'current':
             seasons_to_try = [season]
         else:
-            seasons_to_try = ['2025-26', '2024-25']
+            from dynamic_config import dynamic_config
+            seasons_to_try = dynamic_config.get_available_seasons()
         
         team_stats = None
         selected_season = None
@@ -512,21 +528,17 @@ def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
 
 @cache.cache
 def get_player_advanced_stats(player_id, season, season_type):
-    """Get advanced player stats."""
+    """Get advanced player stats using dynamic configuration."""
     try:
-        stats = fetch_advanced_stats(player_id, season, season_type)
-        if stats.empty:
-            logger.warning(f"No advanced stats for player {player_id}, season {season}")
-            return {'USG_PCT': 0.2, 'TS_PCT': 0.5, 'DEF_RATING': 110.0}
-        player_stats = stats.iloc[0]
-        return {
-            'USG_PCT': player_stats.get('USG_PCT', 0.2),
-            'TS_PCT': player_stats.get('TS_PCT', 0.5),
-            'DEF_RATING': player_stats.get('DEF_RATING', 110.0)
-        }
+        # Use dynamic configuration to get player advanced stats
+        advanced_stats = dynamic_config.get_player_advanced_stats_from_api(player_id, season, season_type)
+        logger.info(f"Dynamic advanced stats for player {player_id}: {advanced_stats}")
+        return advanced_stats
+        
     except Exception as e:
-        logger.error(f"Error fetching advanced stats for {player_id}, season {season}: {e}")
-        return {'USG_PCT': 0.2, 'TS_PCT': 0.5, 'DEF_RATING': 110.0}
+        logger.error(f"Error fetching dynamic advanced stats for {player_id}, season {season}: {e}")
+        # Fallback to dynamic configuration's fallback method
+        return dynamic_config._get_fallback_player_stats()
 
 @cache.cache
 def get_player_fatigue_metrics(player_id, season, season_type, num_games=10):
@@ -559,89 +571,31 @@ def get_all_active_players():
 
 @cache.cache
 def get_league_team_averages(season, season_type='Regular Season'):
-    """Get league-wide team averages for normalization purposes."""
+    """Get league-wide team averages using dynamic configuration."""
     try:
-        team_stats = leaguedashteamstats.LeagueDashTeamStats(
-            season=season,
-            season_type_all_star=season_type,
-            timeout=120
-        ).get_data_frames()[0]
-        
-        if team_stats.empty:
-            logger.warning(f"No team stats data for {season}")
-            return {
-                'PTS': 115.0, 'REB': 43.0, 'AST': 25.0, 'BLK': 5.0, 'STL': 7.0,
-                'PTS_std': 4.0, 'REB_std': 2.5, 'AST_std': 2.0, 'BLK_std': 0.8, 'STL_std': 0.9
-            }
-        
-        # Calculate league averages and standard deviations
-        league_avgs = {
-            'PTS': team_stats['PTS'].mean() / team_stats['GP'].mean(),
-            'REB': team_stats['REB'].mean() / team_stats['GP'].mean(), 
-            'AST': team_stats['AST'].mean() / team_stats['GP'].mean(),
-            'BLK': team_stats['BLK'].mean() / team_stats['GP'].mean(),
-            'STL': team_stats['STL'].mean() / team_stats['GP'].mean()
-        }
-        
-        # Calculate standard deviations for normalization
-        team_stats_per_game = team_stats.copy()
-        for stat in ['PTS', 'REB', 'AST', 'BLK', 'STL']:
-            team_stats_per_game[f'{stat}_PG'] = team_stats[stat] / team_stats['GP']
-            league_avgs[f'{stat}_std'] = team_stats_per_game[f'{stat}_PG'].std()
-        
-        logger.info(f"League averages for {season}: {league_avgs}")
-        return league_avgs
+        # Use dynamic configuration to get league team averages
+        league_averages = dynamic_config.get_league_averages_from_api(season, season_type)
+        logger.info(f"Dynamic league team averages for {season}: {league_averages}")
+        return league_averages
         
     except Exception as e:
-        logger.error(f"Error fetching league team averages for {season}: {e}")
-        # Return default values based on typical NBA averages
-        return {
-            'PTS': 115.0, 'REB': 43.0, 'AST': 25.0, 'BLK': 5.0, 'STL': 7.0,
-            'PTS_std': 4.0, 'REB_std': 2.5, 'AST_std': 2.0, 'BLK_std': 0.8, 'STL_std': 0.9
-        }
+        logger.error(f"Error fetching dynamic league team averages for {season}: {e}")
+        # Fallback to dynamic configuration's fallback method
+        return dynamic_config._get_fallback_league_averages()
 
 @cache.cache
 def get_league_average_minutes(season, season_type='Regular Season'):
-    """Get league-wide average minutes per game for players."""
+    """Get league-wide average minutes per game using dynamic configuration."""
     try:
-        player_stats = leaguedashplayerstats.LeagueDashPlayerStats(
-            season=season,
-            season_type_all_star=season_type,
-            timeout=120
-        ).get_data_frames()[0]
-        
-        if player_stats.empty:
-            logger.warning(f"No player stats data for {season}")
-            return {'avg_mpg': 24.0, 'std_mpg': 8.0}  # Default NBA average
-        
-        # Filter for players with meaningful minutes (>= 5 games, >= 5 MPG)
-        active_players = player_stats[
-            (player_stats['GP'] >= 5) & 
-            ((player_stats['MIN'] / player_stats['GP']) >= 5.0)
-        ]
-        
-        if active_players.empty:
-            return {'avg_mpg': 24.0, 'std_mpg': 8.0}
-            
-        # Calculate minutes per game for each player
-        active_players = active_players.copy()
-        active_players['MPG'] = active_players['MIN'] / active_players['GP']
-        
-        league_avg_mpg = active_players['MPG'].mean()
-        league_std_mpg = active_players['MPG'].std()
-        
-        logger.info(f"League average minutes per game for {season}: {league_avg_mpg:.1f} ± {league_std_mpg:.1f}")
-        return {
-            'avg_mpg': float(league_avg_mpg),
-            'std_mpg': float(league_std_mpg)
-        }
+        # Use dynamic configuration to get league minutes averages
+        minutes_averages = dynamic_config.get_league_minutes_averages_from_api(season, season_type)
+        logger.info(f"Dynamic league minutes averages for {season}: {minutes_averages}")
+        return minutes_averages
         
     except Exception as e:
-        logger.error(f"Error fetching league average minutes for {season}: {e}")
-        return {
-            'avg_mpg': 24.0,
-            'std_mpg': 8.0
-        }
+        logger.error(f"Error fetching dynamic league minutes averages for {season}: {e}")
+        # Fallback to dynamic configuration's fallback method
+        return dynamic_config._get_fallback_minutes_averages()
 
 @cache.cache
 def get_injured_players_list():

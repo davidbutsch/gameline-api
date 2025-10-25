@@ -1,70 +1,41 @@
-import requests
+"""
+Enhanced Injury Analysis Module
+Provides efficient, cached, and reliable injury data access.
+"""
+
 import pandas as pd
+import logging
+from datetime import datetime, timedelta
+from dynamic_config import dynamic_config
+from api_service import api_service
+
+logger = logging.getLogger(__name__)
 
 def get_nba_injury_report():
-    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
-    resp = requests.get(url)
-    if resp.status_code != 200:
-        print(f"Failed to fetch injuries, status code: {resp.status_code}")
-        return pd.DataFrame()
-    
-    data = resp.json()
-    all_injuries = []
+    """Fetch comprehensive NBA injury report with enhanced data processing."""
+    return api_service.get_nba_injury_report()
 
-    for team in data.get("injuries", []):
-        team_name = team.get("displayName")
-        for injury in team.get("injuries", []):
-            athlete = injury.get("athlete", {})
-            all_injuries.append({
-                "player_name": athlete.get("displayName"),
-                "team_name": team_name,
-                "status": injury.get("status"),
-                "short_comment": injury.get("shortComment"),
-                "long_comment": injury.get("longComment"),
-                "return_date": injury.get("date")
-            })
-    
-    df = pd.DataFrame(all_injuries)
-    return df
+def get_team_injuries(team_abbr):
+    """Get injuries for a specific team."""
+    return api_service.get_team_injuries(team_abbr)
+
+def get_player_injury_status(player_name, team_abbr=None):
+    """Get injury status for a specific player."""
+    return api_service.get_player_injury_status(player_name, team_abbr)
+
+def calculate_team_injury_impact(team_abbr):
+    """Calculate overall injury impact for a team."""
+    return api_service.calculate_team_injury_impact(team_abbr)
+
+def get_injury_adjustment_factor(player_name, player_team, opponent_team):
+    """Calculate injury adjustment factor for predictions."""
+    return api_service.get_injury_adjustment_factor(player_name, player_team, opponent_team)
 
 if __name__ == "__main__":
+    # Test the injury system
     df = get_nba_injury_report()
     if df.empty:
         print("No injury data found.")
     else:
-        print(df)
-import requests
-import pandas as pd
-
-def get_nba_injury_report():
-    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
-    resp = requests.get(url)
-    if resp.status_code != 200:
-        print(f"Failed to fetch injuries, status code: {resp.status_code}")
-        return pd.DataFrame()
-    
-    data = resp.json()
-    all_injuries = []
-
-    for team in data.get("injuries", []):
-        team_name = team.get("displayName")
-        for injury in team.get("injuries", []):
-            athlete = injury.get("athlete", {})
-            all_injuries.append({
-                "player_name": athlete.get("displayName"),
-                "team_name": team_name,
-                "status": injury.get("status"),
-                "short_comment": injury.get("shortComment"),
-                "long_comment": injury.get("longComment"),
-                "return_date": injury.get("date")
-            })
-    
-    df = pd.DataFrame(all_injuries)
-    return df
-
-if __name__ == "__main__":
-    df = get_nba_injury_report()
-    if df.empty:
-        print("No injury data found.")
-    else:
-        print(df)
+        print(f"Found {len(df)} injuries")
+        print(df.head())

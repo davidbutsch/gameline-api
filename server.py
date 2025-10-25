@@ -133,10 +133,12 @@ def predict():
             logger.error(f"Team not found: {opponent_abbr}")
             return jsonify({"error": f"Team '{opponent_abbr}' not found"}), 404
 
-        # Fetch additional data for prediction, use current season (2025-26) for player averages
-        logger.info(f"Fetching averages for player {player_name} using current season")
+        # Fetch additional data for prediction using dynamic season
+        from dynamic_config import dynamic_config
+        primary_season = dynamic_config.get_primary_season()
+        logger.info(f"Fetching averages for player {player_name} using season {primary_season}")
         h2h_stats, h2h_list = bc.get_head_to_head_stats(player_info['player_id'], opponent_abbr)
-        averages = bc.get_player_season_recent_averages(player_info['player_id'], '2025-26', season_type)
+        averages = bc.get_player_season_recent_averages(player_info['player_id'], primary_season, season_type)
         logger.debug(f"Player averages for {player_name}: {averages}")
 
         result = predictor.predict_over_under(
