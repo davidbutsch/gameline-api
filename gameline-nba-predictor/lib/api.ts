@@ -1,6 +1,6 @@
 // API configuration and helper functions for GameLine backend
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5002"
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001"
 
 export interface Player {
   id: number
