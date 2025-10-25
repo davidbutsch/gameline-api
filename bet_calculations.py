@@ -390,13 +390,48 @@ def get_team_recent_stats(team_id, season, season_type, measure_type, num_games=
 
 @cache.cache
 def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
-    """Get opponent team averages for the specified season."""
+    """Get opponent team averages for the specified season, trying game logs first for accuracy."""
     try:
         team_id = get_team_id(team_abbr)
         if not team_id:
             logger.error(f"Team {team_abbr} not found")
             return None
         
+        # First, try to get game-by-game data for more accurate averages
+        try:
+            from nba_api.stats.endpoints import teamgamelog
+            gamelog = teamgamelog.TeamGameLog(
+                team_id=team_id,
+                season=season,
+                season_type_all_star=season_type,
+                timeout=120
+            ).get_data_frames()[0]
+            
+            if not gamelog.empty and len(gamelog) >= 1:
+                # Calculate averages from actual game logs
+                games_played = len(gamelog)
+                
+                opponent_averages = {
+                    'PTS': gamelog['PTS'].mean(),
+                    'REB': gamelog['REB'].mean(),
+                    'AST': gamelog['AST'].mean(),
+                    'BLK': gamelog['BLK'].mean(),
+                    'STL': gamelog['STL'].mean(),
+                    'PACE': 100.0,  # Game log doesn't have pace, use default
+                    'OFF_RATING': 110.0,  # Game log doesn't have ratings, use default
+                    'DEF_RATING': 110.0,
+                    'GP': games_played
+                }
+                
+                logger.info(f"Successfully calculated {team_abbr} averages from {games_played} game logs for {season}")
+                logger.info(f"Game log averages for {team_abbr}: PTS={opponent_averages['PTS']:.1f}, "
+                          f"REB={opponent_averages['REB']:.1f}, AST={opponent_averages['AST']:.1f}")
+                return opponent_averages
+                
+        except Exception as e:
+            logger.warning(f"Could not get game logs for {team_abbr} {season}, trying team stats: {e}")
+        
+        # Fall back to team stats if game logs unavailable
         # If a specific season is provided, use it; otherwise try current seasons
         if season and season != 'current':
             seasons_to_try = [season]
@@ -467,7 +502,8 @@ def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
             'GP': games_played
         }
         
-        logger.info(f"Fetched opponent averages for {team_abbr}: {opponent_averages}")
+        logger.info(f"Fetched opponent averages for {team_abbr} from team stats: PTS={opponent_averages['PTS']:.1f}, "
+                   f"REB={opponent_averages['REB']:.1f}, AST={opponent_averages['AST']:.1f}")
         return opponent_averages
         
     except Exception as e:
