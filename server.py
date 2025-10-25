@@ -17,7 +17,7 @@ CORS(
 
     app,
 
-    resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}},
+    resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001"]}},
 
     supports_credentials=True
 
@@ -175,7 +175,12 @@ def predict():
         result['headshot_url'] = player_info['headshot_url']
         result['player_name'] = player_name
         result['h2h_list'] = h2h_list
-        result['player_averages'] = averages
+        # Flatten the averages structure to avoid React rendering issues
+        result['player_averages'] = {
+            'season_averages': averages.get('season_averages', {}),
+            'recent_averages': averages.get('recent_averages', {}),
+            'season_long_averages': averages.get('season_long_averages', {})
+        }
         # Ensure predicted_value is always present in the response
         if 'predicted_value' not in result:
             result['predicted_value'] = None
@@ -189,4 +194,4 @@ def predict():
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    app.run(host='0.0.0.0', port=5002, debug=True)
