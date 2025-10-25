@@ -348,17 +348,21 @@ def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
             
         team_row = team_data.iloc[0]
         
-        # Extract relevant stats
+        # Extract relevant stats and convert to per-game averages
+        games_played = int(team_row.get('GP', 82))
+        if games_played == 0:
+            games_played = 82  # Prevent division by zero
+            
         opponent_averages = {
-            'PTS': float(team_row.get('PTS', 110.0)),
-            'REB': float(team_row.get('REB', 43.0)),
-            'AST': float(team_row.get('AST', 25.0)),
-            'BLK': float(team_row.get('BLK', 5.0)),
-            'STL': float(team_row.get('STL', 7.0)),
+            'PTS': float(team_row.get('PTS', 110.0 * games_played)) / games_played,
+            'REB': float(team_row.get('REB', 43.0 * games_played)) / games_played,
+            'AST': float(team_row.get('AST', 25.0 * games_played)) / games_played,
+            'BLK': float(team_row.get('BLK', 5.0 * games_played)) / games_played,
+            'STL': float(team_row.get('STL', 7.0 * games_played)) / games_played,
             'PACE': float(team_row.get('PACE', 100.0)),
             'OFF_RATING': float(team_row.get('OFF_RATING', 110.0)),
             'DEF_RATING': float(team_row.get('DEF_RATING', 110.0)),
-            'GP': int(team_row.get('GP', 82))  # Games played
+            'GP': games_played
         }
         
         logger.info(f"Fetched opponent averages for {team_abbr}: {opponent_averages}")
