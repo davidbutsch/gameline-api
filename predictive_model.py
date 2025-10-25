@@ -1119,4 +1119,13 @@ class AdvancedNBAPlayerPredictor:
         message += f"\nPredicted {category}: {pred_rounded} (95% CI: {ci_lower_rounded}-{ci_upper_rounded})\n"
         message += f"P(Over {betting_line}): {p_over*100:.1f}%\n"
         message += f"{confidence_pct:.1f}% confident bet on {bet_on.upper()}"
-        return {'bet_on': bet_on, 'confidence': confidence_pct, 'predicted_value': pred_rounded, 'message': message, 'opp_averages': opp_avgs, 'confidence_interval': f'{ci_lower_rounded}-{ci_upper_rounded}'}
+        return {
+            'bet_on': bet_on, 
+            'confidence': confidence_pct, 
+            'predicted_value': pred_rounded, 
+            'message': message, 
+            'opp_averages': opp_avgs, 
+            'confidence_interval': f'{ci_lower_rounded}-{ci_upper_rounded}',
+            'opponent_impact_factor': opponent_impact,
+            'net_injury_effect': injury_adjustment
+        }
