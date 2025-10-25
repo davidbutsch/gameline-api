@@ -14,13 +14,15 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 CORS(
-
     app,
-
-    resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}},
-
-    supports_credentials=True
-
+    resources={
+        r"/api/*": {
+            "origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001"],
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+            "supports_credentials": True
+        }
+    }
 )
 
 @app.before_request
@@ -187,6 +189,16 @@ def predict():
     except Exception as e:
         logger.error(f"Error processing prediction for {player_name}: {str(e)}")
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+# Health check endpoint for testing frontend connectivity
+@app.route('/api/health', methods=['GET'])
+def health_check_frontend():
+    return jsonify({
+        'status': 'healthy',
+        'message': 'Backend server is running',
+        'port': 5001,
+        'cors_enabled': True
+    })
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5001, debug=True)
