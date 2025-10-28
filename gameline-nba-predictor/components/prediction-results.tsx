@@ -128,15 +128,208 @@ export function PredictionResults({ result, player, isLoading, onSavePrediction,
         </CardContent>
       </Card>
 
+      {/* Player Averages Chart */}
+      {result.player_averages && result.player_averages.season_averages && result.player_averages.recent_averages && (
+        <Card className="border border-border shadow-lg overflow-hidden">
+          <CardHeader className="bg-gradient-to-r from-accent-primary/5 to-accent-secondary/5 p-6 m-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-accent-primary/10 rounded-lg flex items-center justify-center">
+                <BarChart3 className="w-5 h-5 text-accent-primary" />
+              </div>
+              <div>
+                <CardTitle className="text-lg font-semibold text-foreground">Player Averages for {result.category || 'Points'}</CardTitle>
+                <p className="text-sm text-muted-foreground">Historical performance comparison</p>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-6 pt-0">
+            {(() => {
+              // Determine which category to show based on the result
+              const category = result.category || 'Points'
+              
+              // Get the stat key based on category
+              const getStatKey = (cat: string) => {
+                const mapping: { [key: string]: string } = {
+                  'Points': 'PTS',
+                  'Rebounds': 'REB',
+                  'Assists': 'AST',
+                  'Blocks': 'BLK',
+                  'Steals': 'STL',
+                  'Points+Rebounds+Assists': 'POINTS+REBOUNDS+ASSISTS',
+                  'Rebounds+Assists': 'REBOUNDS+ASSISTS',
+                  'Points+Rebounds': 'POINTS+REBOUNDS',
+                  'Points+Assists': 'POINTS+ASSISTS',
+                  'Blocks+Steals': 'BLOCKS+STEALS'
+                }
+                return mapping[cat] || 'PTS'
+              }
+              
+              const statKey = getStatKey(category)
+              const seasonAvg = result.player_averages.season_averages[statKey] || 0
+              const recentAvg = result.player_averages.recent_averages[statKey] || 0
+              
+              // Handle H2H averages - calculate combination stats if not available
+              let h2hAvg = result.player_averages.h2h_averages?.[statKey] || 0
+              if (h2hAvg === 0 && result.player_averages.h2h_averages) {
+                const h2hData = result.player_averages.h2h_averages
+                switch (statKey) {
+                  case 'POINTS+REBOUNDS+ASSISTS':
+                    h2hAvg = (h2hData.PTS || 0) + (h2hData.REB || 0) + (h2hData.AST || 0)
+                    break
+                  case 'REBOUNDS+ASSISTS':
+                    h2hAvg = (h2hData.REB || 0) + (h2hData.AST || 0)
+                    break
+                  case 'POINTS+REBOUNDS':
+                    h2hAvg = (h2hData.PTS || 0) + (h2hData.REB || 0)
+                    break
+                  case 'POINTS+ASSISTS':
+                    h2hAvg = (h2hData.PTS || 0) + (h2hData.AST || 0)
+                    break
+                  case 'BLOCKS+STEALS':
+                    h2hAvg = (h2hData.BLK || 0) + (h2hData.STL || 0)
+                    break
+                }
+              }
+              
+              const bettingLine = result.betting_line || 0
+              const maxValue = Math.max(seasonAvg, recentAvg, h2hAvg, bettingLine, 1) * 1.15 // Add 15% padding
+              const chartHeight = 280
+              const barSpacing = 16
+              
+              return (
+                <div className="bg-gradient-to-br from-muted/20 to-muted/40 rounded-xl p-6 border border-border/50">
+                  {/* Chart Container with Y-axis and Plotting Area */}
+                  <div className="flex relative" style={{ height: `${chartHeight}px` }}>
+                    {/* Y-axis labels */}
+                    <div className="flex flex-col justify-between text-xs text-muted-foreground pr-3 w-10 h-full">
+                      {Array.from({length: 7}).map((_, i) => (
+                        <div key={i} className="text-right font-medium">
+                          {Math.round((maxValue / 6) * (6 - i))}
+                        </div>
+                      ))}
+                    </div>
+                    
+                    {/* Plotting area with grid, bars, and betting line */}
+                    <div className="flex-1 relative">
+                      {/* Grid lines */}
+                      <div className="absolute inset-0">
+                        {Array.from({length: 6}).map((_, i) => (
+                          <div 
+                            key={i} 
+                            className="absolute left-0 right-0 border-t border-border/20"
+                            style={{ top: `${(i * chartHeight) / 5}px` }}
+                          ></div>
+                        ))}
+                      </div>
+                      
+                      {/* Bars */}
+                      <div className="absolute inset-0 flex items-end justify-around px-2">
+                        {/* Season Average - Green */}
+                        <div className="flex flex-col items-center" style={{ width: '30%' }}>
+                          <div className="w-full">
+                            <div 
+                              className="w-full bg-green-500 rounded-t border-b-2 border-green-600 flex items-center justify-center"
+                              style={{ 
+                                height: `${(seasonAvg / maxValue) * chartHeight}px`,
+                                minHeight: '12px'
+                              }}
+                            >
+                              <span className="text-xs font-bold text-white">{seasonAvg.toFixed(1)}</span>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Recent Average - Orange */}
+                        <div className="flex flex-col items-center" style={{ width: '30%' }}>
+                          <div className="w-full">
+                            <div 
+                              className="w-full bg-orange-500 rounded-t border-b-2 border-orange-600 flex items-center justify-center"
+                              style={{ 
+                                height: `${(recentAvg / maxValue) * chartHeight}px`,
+                                minHeight: '12px'
+                              }}
+                            >
+                              <span className="text-xs font-bold text-white">{recentAvg.toFixed(1)}</span>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* H2H Average - Dark Grey */}
+                        {h2hAvg > 0 && (
+                          <div className="flex flex-col items-center" style={{ width: '30%' }}>
+                            <div className="w-full">
+                              <div 
+                                className="w-full bg-gray-600 rounded-t border-b-2 border-gray-700 flex items-center justify-center"
+                                style={{ 
+                                  height: `${(h2hAvg / maxValue) * chartHeight}px`,
+                                  minHeight: '12px'
+                                }}
+                              >
+                                <span className="text-xs font-bold text-white">{h2hAvg.toFixed(1)}</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Betting Line - Horizontal dashed line */}
+                      {bettingLine > 0 && (
+                        <>
+                          <div 
+                            className="absolute left-0 right-0 border-t-2 border-dashed border-yellow-500 z-10"
+                            style={{ 
+                              bottom: `${(bettingLine / maxValue) * chartHeight}px`
+                            }}
+                          />
+                          {/* Betting Line Label on the right */}
+                          <div 
+                            className="absolute bg-yellow-500 rounded px-2 py-0.5 whitespace-nowrap z-20"
+                            style={{ 
+                              bottom: `${(bettingLine / maxValue) * chartHeight - 10}px`,
+                              right: '0px'
+                            }}
+                          >
+                            <span className="text-xs font-bold text-white">Betting Line</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {/* X-axis labels below the chart */}
+                  <div className="flex justify-around mt-4 px-2">
+                    <div className="w-[30%]">
+                      <div className="text-sm font-medium text-muted-foreground text-center">Season</div>
+                    </div>
+                    <div className="w-[30%]">
+                      <div className="text-sm font-medium text-muted-foreground text-center">Last 10 Games</div>
+                    </div>
+                    {h2hAvg > 0 && (
+                      <div className="w-[30%]">
+                        <div className="text-sm font-medium text-muted-foreground text-center">vs. {result.opponent_abbr || 'Opponent'}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Player Performance Chart */}
       {result.player_averages && (
-        <Card className="border border-border shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-accent-primary/5 to-accent-secondary/5">
-            <CardTitle className="text-xl text-foreground flex items-center gap-2">
-              <BarChart3 className="w-6 h-6 text-accent-primary" />
-              Player Performance Trends
-            </CardTitle>
-            <p className="text-sm text-muted-foreground">Recent vs Season averages with trend analysis</p>
+        <Card className="border border-border shadow-lg overflow-hidden">
+          <CardHeader className="bg-gradient-to-r from-accent-primary/5 to-accent-secondary/5 p-6 m-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-accent-primary/10 rounded-lg flex items-center justify-center">
+                <BarChart3 className="w-5 h-5 text-accent-primary" />
+              </div>
+              <div>
+                <CardTitle className="text-lg font-semibold text-foreground">Player Performance Trends</CardTitle>
+                <p className="text-sm text-muted-foreground">Recent vs Season averages with trend analysis</p>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="p-6">
             <div className="space-y-6">
@@ -167,9 +360,15 @@ export function PredictionResults({ result, player, isLoading, onSavePrediction,
                                   <Minus className="w-5 h-5 text-muted-foreground" />
                                 )}
                               </div>
-                              <div>
+                              <div className="min-w-0 flex-1">
                                 <span className="text-lg font-bold text-foreground">{stat}</span>
-                                <p className="text-xs text-muted-foreground">Points per game</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {stat === 'PTS' ? 'Per game' :
+                                   stat === 'REB' ? 'Per game' :
+                                   stat === 'AST' ? 'Per game' :
+                                   stat === 'BLK' ? 'Per game' :
+                                   stat === 'STL' ? 'Per game' : 'Per game'}
+                                </p>
                               </div>
                             </div>
                             <div className="text-right">
@@ -209,10 +408,10 @@ export function PredictionResults({ result, player, isLoading, onSavePrediction,
                             </div>
                             
                             {/* Change Indicator */}
-                            <div className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
+                            <div className="flex items-center justify-between p-3 bg-muted/30 rounded-lg mt-1">
                               <span className="text-sm font-medium text-foreground">Performance Change</span>
                               <div className="flex items-center gap-2">
-                                <span className={`text-lg font-bold ${trend === 'up' ? 'text-green-500' : trend === 'down' ? 'text-red-500' : 'text-muted-foreground'}`}>
+                                <span className={`text-sm font-bold ${trend === 'up' ? 'text-green-500' : trend === 'down' ? 'text-red-500' : 'text-muted-foreground'}`}>
                                   {percentage > 0 ? '+' : ''}{percentage.toFixed(1)}%
                                 </span>
                                 <div className={`w-2 h-2 rounded-full ${trend === 'up' ? 'bg-green-500' : trend === 'down' ? 'bg-red-500' : 'bg-muted-foreground'}`}></div>
@@ -232,13 +431,17 @@ export function PredictionResults({ result, player, isLoading, onSavePrediction,
 
       {/* Head to Head Stats */}
       {result.h2h_list && result.h2h_list.length > 0 && (
-        <Card className="border border-border shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-accent-secondary/5 to-accent-primary/5">
-            <CardTitle className="text-xl text-foreground flex items-center gap-2">
-              <Activity className="w-6 h-6 text-accent-secondary" />
-              Recent Head-to-Head Games
-            </CardTitle>
-            <p className="text-sm text-muted-foreground">Historical performance against this opponent</p>
+        <Card className="border border-border shadow-lg overflow-hidden">
+          <CardHeader className="bg-gradient-to-r from-accent-secondary/5 to-accent-primary/5 p-6 m-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-accent-secondary/10 rounded-lg flex items-center justify-center">
+                <Activity className="w-5 h-5 text-accent-secondary" />
+              </div>
+              <div>
+                <CardTitle className="text-lg font-semibold text-foreground">Recent Head-to-Head Games</CardTitle>
+                <p className="text-sm text-muted-foreground">Historical performance against this opponent</p>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="p-6">
             <div className="space-y-4">
@@ -306,13 +509,17 @@ export function PredictionResults({ result, player, isLoading, onSavePrediction,
 
       {/* Opponent Team Analysis */}
       {result.opp_averages && (
-        <Card className="border border-border shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-accent-primary/5 to-accent-secondary/5">
-            <CardTitle className="text-xl text-foreground flex items-center gap-2">
-              <BarChart3 className="w-6 h-6 text-accent-primary" />
-              Opponent Team Analysis
-            </CardTitle>
-            <p className="text-sm text-muted-foreground">How the opposing team performs defensively</p>
+        <Card className="border border-border shadow-lg overflow-hidden">
+          <CardHeader className="bg-gradient-to-r from-accent-primary/5 to-accent-secondary/5 p-6 m-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-accent-primary/10 rounded-lg flex items-center justify-center">
+                <BarChart3 className="w-5 h-5 text-accent-primary" />
+              </div>
+              <div>
+                <CardTitle className="text-lg font-semibold text-foreground">Opponent Team Analysis</CardTitle>
+                <p className="text-sm text-muted-foreground">How the opposing team performs defensively</p>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="p-6">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -400,13 +607,17 @@ export function PredictionResults({ result, player, isLoading, onSavePrediction,
 
       {/* Opponent Impact Analysis - Extract from existing data */}
       {result.opp_averages && (
-        <Card className="border border-border shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-accent-primary/5 to-accent-secondary/5">
-            <CardTitle className="text-xl text-foreground flex items-center gap-2">
-              <Target className="w-6 h-6 text-accent-primary" />
-              Opponent Impact Analysis
-            </CardTitle>
-            <p className="text-sm text-muted-foreground">How the opponent affects this prediction</p>
+        <Card className="border border-border shadow-lg overflow-hidden">
+          <CardHeader className="bg-gradient-to-r from-accent-primary/5 to-accent-secondary/5 p-6 m-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-accent-primary/10 rounded-lg flex items-center justify-center">
+                <Target className="w-5 h-5 text-accent-primary" />
+              </div>
+              <div>
+                <CardTitle className="text-lg font-semibold text-foreground">Opponent Impact Analysis</CardTitle>
+                <p className="text-sm text-muted-foreground">How the opponent affects this prediction</p>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="p-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -497,60 +708,110 @@ export function PredictionResults({ result, player, isLoading, onSavePrediction,
         </Card>
       )}
 
-      {/* Injury Impact Analysis - Extract Net Injury Effect */}
-      {result.message && result.message.includes("Net Injury Effect") && (
-        <Card className="border border-border shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-accent-secondary/5 to-accent-primary/5">
-            <CardTitle className="text-xl text-foreground flex items-center gap-2">
-              <Activity className="w-6 h-6 text-accent-secondary" />
-              Injury Impact Analysis
-            </CardTitle>
-            <p className="text-sm text-muted-foreground">How injuries affect this prediction</p>
+      {/* Injury Impact Analysis with Team Injuries */}
+      {result.message && result.message.includes("Injury Impact Analysis") && (
+        <Card className="border border-border shadow-lg overflow-hidden">
+          <CardHeader className="bg-gradient-to-r from-accent-secondary/5 to-accent-primary/5 p-6 m-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-accent-secondary/10 rounded-lg flex items-center justify-center">
+                <Activity className="w-5 h-5 text-accent-secondary" />
+              </div>
+              <div>
+                <CardTitle className="text-lg font-semibold text-foreground">Injury Impact Analysis</CardTitle>
+                <p className="text-sm text-muted-foreground">How injuries affect this prediction</p>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="p-6">
-            <div className="flex justify-center">
-              <div className="p-6 bg-gradient-to-br from-muted/20 to-muted/40 rounded-xl border border-border/50 max-w-md w-full">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <div className={`p-3 rounded-lg ${
+            <div className="space-y-6">
+              {/* Net Injury Effect - Full Width at Top */}
+              <div className="p-6 bg-gradient-to-br from-muted/20 to-muted/40 rounded-xl border border-border/50">
+                <div className="flex items-center gap-4">
+                  <div className={`p-3 rounded-lg flex-shrink-0 ${
+                    (() => {
+                      const message = result.message || ""
+                      const netEffectMatch = message.match(/Net Injury Effect:\s*(.+)/i)
+                      const netEffect = netEffectMatch ? netEffectMatch[1].trim() : "Neutral"
+                      return netEffect.toLowerCase().includes('positive') ? 'bg-green-500/20' :
+                             netEffect.toLowerCase().includes('negative') ? 'bg-red-500/20' : 'bg-muted/20'
+                    })()
+                  }`}>
+                    <Activity className={`w-5 h-5 ${
                       (() => {
                         const message = result.message || ""
                         const netEffectMatch = message.match(/Net Injury Effect:\s*(.+)/i)
                         const netEffect = netEffectMatch ? netEffectMatch[1].trim() : "Neutral"
-                        return netEffect.toLowerCase().includes('positive') ? 'bg-green-500/20' :
-                               netEffect.toLowerCase().includes('negative') ? 'bg-red-500/20' : 'bg-muted/20'
+                        return netEffect.toLowerCase().includes('positive') ? 'text-green-500' :
+                               netEffect.toLowerCase().includes('negative') ? 'text-red-500' : 'text-muted-foreground'
                       })()
-                    }`}>
-                      <Activity className={`w-6 h-6 ${
-                        (() => {
-                          const message = result.message || ""
-                          const netEffectMatch = message.match(/Net Injury Effect:\s*(.+)/i)
-                          const netEffect = netEffectMatch ? netEffectMatch[1].trim() : "Neutral"
-                          return netEffect.toLowerCase().includes('positive') ? 'text-green-500' :
-                                 netEffect.toLowerCase().includes('negative') ? 'text-red-500' : 'text-muted-foreground'
-                        })()
-                      }`} />
-                    </div>
-                    <div>
-                      <span className="text-lg font-semibold text-foreground">Net Injury Effect</span>
-                      <p className="text-xs text-muted-foreground">Overall Impact</p>
-                    </div>
+                    }`} />
                   </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold text-foreground">
+                  <div className="flex-1">
+                    <p className="text-sm text-muted-foreground mb-1">Net Injury Effect</p>
+                    <p className="text-xl font-bold text-foreground">
                       {(() => {
                         const message = result.message || ""
                         const netEffectMatch = message.match(/Net Injury Effect:\s*(.+)/i)
                         return netEffectMatch ? netEffectMatch[1].trim() : "Neutral"
                       })()}
                     </p>
-                    <p className="text-sm text-muted-foreground">Combined Effect</p>
                   </div>
                 </div>
-                <div className="text-sm text-muted-foreground text-center">
-                  Combined injury impact on prediction
-                </div>
               </div>
+
+              {/* Team Injuries - Side by Side */}
+              {(result.team_injuries && result.team_injuries.length > 0) || (result.opponent_injuries && result.opponent_injuries.length > 0) ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {result.team_injuries && result.team_injuries.length > 0 && (
+                    <div className="p-4 bg-gradient-to-br from-muted/20 to-muted/40 rounded-xl border border-border/50">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="p-1.5 bg-accent-primary/20 rounded">
+                          <Activity className="w-3.5 h-3.5 text-accent-primary" />
+                        </div>
+                        <h4 className="text-sm font-semibold text-foreground">Player's Team Injuries</h4>
+                      </div>
+                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                        {result.team_injuries.map((injury: any, i: number) => (
+                          <div key={i} className="flex items-center justify-between text-xs py-1.5 px-2 bg-background/50 rounded border border-border/30">
+                            <span className="text-foreground font-medium">{injury.player_name}</span>
+                            <span className={`font-semibold ${injury.status === 'Out' ? 'text-red-400' : injury.status === 'Questionable' ? 'text-yellow-400' : 'text-orange-400'}`}>
+                              {injury.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {result.opponent_injuries && result.opponent_injuries.length > 0 && (
+                    <div className="p-4 bg-gradient-to-br from-muted/20 to-muted/40 rounded-xl border border-border/50">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="p-1.5 bg-accent-secondary/20 rounded">
+                          <Target className="w-3.5 h-3.5 text-accent-secondary" />
+                        </div>
+                        <h4 className="text-sm font-semibold text-foreground">Opponent Injuries ({result.opponent_abbr})</h4>
+                      </div>
+                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                        {result.opponent_injuries.map((injury: any, i: number) => (
+                          <div key={i} className="flex items-center justify-between text-xs py-1.5 px-2 bg-background/50 rounded border border-border/30">
+                            <span className="text-foreground font-medium">{injury.player_name}</span>
+                            <span className={`font-semibold ${injury.status === 'Out' ? 'text-red-400' : injury.status === 'Questionable' ? 'text-yellow-400' : 'text-orange-400'}`}>
+                              {injury.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-6 bg-gradient-to-br from-muted/20 to-muted/40 rounded-xl border border-border/50 flex flex-col items-center justify-center gap-2">
+                  <div className="p-2 bg-green-500/20 rounded">
+                    <Activity className="w-5 h-5 text-green-500" />
+                  </div>
+                  <p className="text-sm font-medium text-foreground">No Active Injuries</p>
+                  <p className="text-xs text-muted-foreground text-center">Both teams are healthy</p>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

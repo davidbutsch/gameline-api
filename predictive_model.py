@@ -1093,11 +1093,15 @@ class AdvancedNBAPlayerPredictor:
         message += f"  Blocks: {opp_avgs['BLK']:.1f}\n"
         message += f"  Steals: {opp_avgs['STL']:.1f}\n"
         message += f"  Pace: {opp_avgs.get('PACE', 100.0):.1f}\n"
+        # Calculate total injury effect combining all factors
+        total_injury_effect = injury_adjustment + (team_injury_impact * 0.3) - (opponent_injury_impact * 0.2)
+        
         message += f"\nInjury Impact Analysis:\n"
         message += f"  Player Injury Adjustment: {injury_adjustment:+.3f}\n"
         message += f"  Team Injury Impact: {team_injury_impact:.3f}\n"
         message += f"  Opponent Injury Impact: {opponent_injury_impact:.3f}\n"
-        message += f"  Net Injury Effect: {'Negative' if injury_adjustment < -0.1 else 'Positive' if injury_adjustment > 0.1 else 'Neutral'}\n"
+        message += f"  Total Injury Effect: {total_injury_effect:+.3f}\n"
+        message += f"  Net Injury Effect: {'Negative' if total_injury_effect < -0.05 else 'Positive' if total_injury_effect > 0.05 else 'Neutral'}\n"
         message += f"\nOpponent Impact Analysis:\n"
         message += f"  Impact Factor: {opponent_impact:+.1%}\n"
         
@@ -1127,5 +1131,11 @@ class AdvancedNBAPlayerPredictor:
             'opp_averages': opp_avgs, 
             'confidence_interval': f'{ci_lower_rounded}-{ci_upper_rounded}',
             'opponent_impact_factor': opponent_impact,
-            'net_injury_effect': injury_adjustment
+            'net_injury_effect': total_injury_effect,
+            'injury_impact': {
+                'player_adjustment': injury_adjustment,
+                'team_impact': team_injury_impact,
+                'opponent_impact': opponent_injury_impact,
+                'total_effect': total_injury_effect
+            }
         }

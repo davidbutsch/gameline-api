@@ -3,6 +3,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from predictive_model import AdvancedNBAPlayerPredictor
 import bet_calculations as bc
+import injuries
 from nba_api.stats.static import players, teams
 import logging
 import time
@@ -177,11 +178,42 @@ def predict():
         result['headshot_url'] = player_info['headshot_url']
         result['player_name'] = player_name
         result['h2h_list'] = h2h_list
+        result['category'] = category
+        result['betting_line'] = betting_line
+        result['opponent_abbr'] = opponent_abbr
+        
+        # Get team injuries for display
+        player_team = player_info.get('team_abbreviation', '')
+        team_injuries_list = []
+        opponent_injuries_list = []
+        
+        if player_team:
+            team_injuries_df = injuries.get_team_injuries(player_team)
+            if team_injuries_df is not None and not team_injuries_df.empty:
+                team_injuries_list = team_injuries_df[['player_name', 'status']].to_dict('records')
+        
+        opponent_team = opponent_abbr
+        opponent_injuries_df = injuries.get_team_injuries(opponent_team)
+        if opponent_injuries_df is not None and not opponent_injuries_df.empty:
+            opponent_injuries_list = opponent_injuries_df[['player_name', 'status']].to_dict('records')
+        
+        result['team_injuries'] = team_injuries_list
+        result['opponent_injuries'] = opponent_injuries_list
+        
+        # Calculate H2H averages from h2h_list
+        h2h_averages = {}
+        if h2h_list and len(h2h_list) > 0:
+            stat_keys = ['PTS', 'REB', 'AST', 'BLK', 'STL']
+            for stat in stat_keys:
+                values = [game.get(stat, 0) for game in h2h_list if game.get(stat) is not None]
+                if values:
+                    h2h_averages[stat] = sum(values) / len(values)
+        
         # Flatten the averages structure to avoid React rendering issues
         result['player_averages'] = {
             'season_averages': averages.get('season_averages', {}),
             'recent_averages': averages.get('recent_averages', {}),
-            'season_long_averages': averages.get('season_long_averages', {})
+            'h2h_averages': h2h_averages  # Changed from season_long_averages to h2h_averages
         }
         # Ensure predicted_value is always present in the response
         if 'predicted_value' not in result:

@@ -455,13 +455,23 @@ def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
             seasons_to_try = dynamic_config.get_available_seasons()
         
         team_stats = None
+        advanced_stats = None
         selected_season = None
         
         for s in seasons_to_try:
             try:
+                # Get basic team stats
                 team_stats = leaguedashteamstats.LeagueDashTeamStats(
                     season=s,
                     season_type_all_star=season_type,
+                    timeout=120
+                ).get_data_frames()[0]
+                
+                # Get advanced stats for PACE, DEF_RATING, OFF_RATING
+                advanced_stats = leaguedashteamstats.LeagueDashTeamStats(
+                    season=s,
+                    season_type_all_star=season_type,
+                    measure_type_detailed_defense='Advanced',
                     timeout=120
                 ).get_data_frames()[0]
                 
@@ -491,13 +501,17 @@ def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
             logger.error(f"Could not fetch team stats for {team_abbr} from any season")
             return None
         
-        # Find the specific team
+        # Find the specific team in both basic and advanced stats
         team_data = team_stats[team_stats['TEAM_ID'] == team_id]
         if team_data.empty:
             logger.warning(f"No team data found for {team_abbr} in {season}")
             return None
             
         team_row = team_data.iloc[0]
+        
+        # Get advanced stats for the same team
+        advanced_data = advanced_stats[advanced_stats['TEAM_ID'] == team_id] if advanced_stats is not None else pd.DataFrame()
+        advanced_row = advanced_data.iloc[0] if not advanced_data.empty else None
         
         # Extract relevant stats and convert to per-game averages
         games_played = int(team_row.get('GP', 82))
@@ -512,14 +526,16 @@ def get_opponent_team_averages(team_abbr, season, season_type='Regular Season'):
             'AST': float(team_row['AST']) / games_played if 'AST' in team_row and pd.notna(team_row['AST']) else 25.0,
             'BLK': float(team_row['BLK']) / games_played if 'BLK' in team_row and pd.notna(team_row['BLK']) else 5.0,
             'STL': float(team_row['STL']) / games_played if 'STL' in team_row and pd.notna(team_row['STL']) else 7.0,
-            'PACE': float(team_row.get('PACE', 100.0)),
-            'OFF_RATING': float(team_row.get('OFF_RATING', 110.0)),
-            'DEF_RATING': float(team_row.get('DEF_RATING', 110.0)),
+            # Use real advanced stats if available, otherwise fallback
+            'PACE': float(advanced_row['PACE']) if advanced_row is not None and 'PACE' in advanced_row and pd.notna(advanced_row['PACE']) else 100.0,
+            'OFF_RATING': float(advanced_row['OFF_RATING']) if advanced_row is not None and 'OFF_RATING' in advanced_row and pd.notna(advanced_row['OFF_RATING']) else 110.0,
+            'DEF_RATING': float(advanced_row['DEF_RATING']) if advanced_row is not None and 'DEF_RATING' in advanced_row and pd.notna(advanced_row['DEF_RATING']) else 110.0,
             'GP': games_played
         }
         
         logger.info(f"Fetched opponent averages for {team_abbr} from team stats: PTS={opponent_averages['PTS']:.1f}, "
-                   f"REB={opponent_averages['REB']:.1f}, AST={opponent_averages['AST']:.1f}")
+                   f"REB={opponent_averages['REB']:.1f}, AST={opponent_averages['AST']:.1f}, "
+                   f"PACE={opponent_averages['PACE']:.1f}, DEF_RATING={opponent_averages['DEF_RATING']:.1f}")
         return opponent_averages
         
     except Exception as e:
